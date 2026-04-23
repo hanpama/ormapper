@@ -31,6 +31,7 @@ func (e *emptyRows) Columns() ([]string, error) { return nil, nil }
 type backend interface {
 	Select(ctx context.Context, op selectOp) (rows, error)
 	Insert(ctx context.Context, op insertOp) (rows, error)
+	Upsert(ctx context.Context, op upsertOp) (rows, error)
 	Update(ctx context.Context, op updateOp) error
 	Delete(ctx context.Context, op deleteOp) error
 	FetchQuery(ctx context.Context, stmt sqlQuery) (rows, error)

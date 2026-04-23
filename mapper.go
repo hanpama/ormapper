@@ -69,7 +69,8 @@ func (m *Mapper) Save(ctx context.Context, db DBTX, entity any) error {
 		return err
 	}
 
-	return newPersistenceOp(m, db).save(ctx, mapping, []any{entity})
+	_, err = newPersistenceOp(m, db).save(ctx, mapping, []any{entity})
+	return err
 }
 
 // Delete removes the aggregate and its descendants from the database.
@@ -88,15 +89,15 @@ func (m *Mapper) Delete(ctx context.Context, db DBTX, entity any) error {
 
 	u := newPersistenceOp(m, db)
 	key := mapping.ExtractKey(entity, mapping.PrimaryKey)
-	current, err := u.get(ctx, mapping, mapping.PrimaryColumns(), []Key{key})
+	existing, err := u.existingKeysByKeys(ctx, mapping, []Key{key})
 	if err != nil {
 		return err
 	}
-	if len(current) == 0 {
+	if len(existing) == 0 {
 		return nil
 	}
 
-	return u.delete(ctx, mapping, current)
+	return u.deleteByKeys(ctx, mapping, []Key{key})
 }
 
 func unwrapDestEntityType(dest any, op string) (reflect.Type, error) {

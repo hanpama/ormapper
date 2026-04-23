@@ -158,6 +158,42 @@ func (em *entityMapping) InsertReturningColumns() []string { return em.insertRet
 // These correspond to InsertReturningColumns but as field names, not column names.
 func (em *entityMapping) InsertReturning() []string { return em.insertReturning }
 
+func (em *entityMapping) allPrimaryKeyGenerated() bool {
+	for _, name := range em.PrimaryKey {
+		if containsField(em.Insertable, name) {
+			return false
+		}
+	}
+	return len(em.PrimaryKey) > 0
+}
+
+func (em *entityMapping) upsertFields() []string {
+	return uniqueFieldNames(em.Insertable, em.PrimaryKey, em.Updatable)
+}
+
+func (em *entityMapping) upsertColumns() []string {
+	return computeColumns(em.upsertFields(), em.FieldMap)
+}
+
+func (em *entityMapping) primaryKeyIsZero(entity any) bool {
+	for _, name := range em.PrimaryKey {
+		value := reflect.ValueOf(em.FieldMap[name].GetValue(entity))
+		if value.IsValid() && !value.IsZero() {
+			return false
+		}
+	}
+	return true
+}
+
+func containsField(fields []string, name string) bool {
+	for _, field := range fields {
+		if field == name {
+			return true
+		}
+	}
+	return false
+}
+
 func computeColumns(fieldNames []string, fieldMap map[string]*field) []string {
 	columns := make([]string, 0, len(fieldNames))
 	for _, name := range fieldNames {

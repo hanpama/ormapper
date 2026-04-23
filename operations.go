@@ -25,6 +25,16 @@ type updateOp struct {
 	WhereValues [][]any  // Values for WHERE clause: WhereValues[i][j] maps to Where[j]
 }
 
+type upsertOp struct {
+	IntoSchema string   // Database schema (optional)
+	IntoTable  string   // Table name
+	Insert     []string // Columns to insert
+	Conflict   []string // Columns used by ON CONFLICT
+	Update     []string // Columns to update from inserted values on conflict
+	Returning  []string // Columns to return
+	Values     [][]any  // Batch upsert values, Values[i][j] maps to Insert[j]
+}
+
 type deleteOp struct {
 	FromSchema string   // Database schema (optional)
 	FromTable  string   // Table name

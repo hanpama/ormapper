@@ -407,6 +407,105 @@ func (b *postgreSQLBackend) renderInsert(stmt insertOp, chunk [][]any) (string, 
 	return b.sqlString(), b.argsBuffer
 }
 
+func (b *postgreSQLBackend) renderUpsert(stmt upsertOp, chunk [][]any) (string, []any) {
+	b.paramIndex = 0
+	numColumns := len(stmt.Insert)
+	b.resetArgsBuffer(len(chunk) * numColumns)
+
+	b.resetSQLBuffer(512)
+
+	b.writeString("WITH \"$r\" (")
+	for i, col := range stmt.Insert {
+		if i > 0 {
+			b.writeString(", ")
+		}
+		b.quoteIdentifier(col)
+	}
+	b.writeString(") AS (VALUES ")
+
+	for idx, row := range chunk {
+		if idx > 0 {
+			b.writeString(", ")
+		}
+		b.writeByte('(')
+		for j := range stmt.Insert {
+			if j > 0 {
+				b.writeString(", ")
+			}
+			b.paramIndex++
+			if idx == 0 {
+				b.writeString("COALESCE((NULL::")
+				b.quoteTable(stmt.IntoSchema, stmt.IntoTable)
+				b.writeString(").")
+				b.quoteIdentifier(stmt.Insert[j])
+				b.writeString(", $")
+				b.writeString(strconv.Itoa(b.paramIndex))
+				b.writeByte(')')
+			} else {
+				b.writeByte('$')
+				b.writeString(strconv.Itoa(b.paramIndex))
+			}
+			b.argsBuffer = append(b.argsBuffer, row[j])
+		}
+		b.writeByte(')')
+	}
+	b.writeString(") ")
+
+	b.writeString("INSERT INTO ")
+	b.quoteTable(stmt.IntoSchema, stmt.IntoTable)
+	b.writeString(" (")
+	for i, col := range stmt.Insert {
+		if i > 0 {
+			b.writeString(", ")
+		}
+		b.quoteIdentifier(col)
+	}
+	b.writeString(") SELECT ")
+	for i, col := range stmt.Insert {
+		if i > 0 {
+			b.writeString(", ")
+		}
+		b.quoteIdentifier(col)
+	}
+	b.writeString(" FROM \"$r\"")
+
+	b.writeString(" ON CONFLICT (")
+	for i, col := range stmt.Conflict {
+		if i > 0 {
+			b.writeString(", ")
+		}
+		b.quoteIdentifier(col)
+	}
+	b.writeString(") DO UPDATE SET ")
+
+	updateCols := stmt.Update
+	if len(updateCols) == 0 {
+		updateCols = stmt.Conflict[:1]
+	}
+	for i, col := range updateCols {
+		if i > 0 {
+			b.writeString(", ")
+		}
+		b.quoteIdentifier(col)
+		b.writeString(" = EXCLUDED.")
+		b.quoteIdentifier(col)
+	}
+
+	if len(stmt.Returning) > 0 {
+		b.writeString(" RETURNING ")
+		for i, col := range stmt.Returning {
+			if i > 0 {
+				b.writeString(", ")
+			}
+			b.quoteIdentifier(stmt.IntoTable)
+			b.writeByte('.')
+			b.quoteIdentifier(col)
+		}
+	}
+
+	return b.sqlString(), b.argsBuffer
+}
+
 // renderUpdate renders a CTE-based UPDATE FROM pattern with UNION for type inference
 // Query format: WITH "$v" AS (SELECT ... FROM table WHERE FALSE UNION ALL VALUES (...))
 //
@@ -614,6 +713,14 @@ func (b *postgreSQLBackend) Insert(ctx context.Context, stmt insertOp) (rows, er
 		return &emptyRows{}, nil
 	}
 	query, args := b.renderInsert(stmt, stmt.Values)
+	return b.queryContext(ctx, query, args...)
+}
+
+func (b *postgreSQLBackend) Upsert(ctx context.Context, stmt upsertOp) (rows, error) {
+	if len(stmt.Values) == 0 {
+		return &emptyRows{}, nil
+	}
+	query, args := b.renderUpsert(stmt, stmt.Values)
 	return b.queryContext(ctx, query, args...)
 }
 
