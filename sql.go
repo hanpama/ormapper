@@ -9,29 +9,29 @@ type sqlNode interface {
 	isSQL()
 }
 
-type sqlN struct{ Part string }
+type sqlN struct{ part string }
 
-type sqlQN struct{ Part1, Part2 string }
+type sqlQN struct{ part1, part2 string }
 
-type sqlText struct{ Text string }
+type sqlText struct{ text string }
 
-type sqlParam struct{ Value any }
+type sqlParam struct{ value any }
 
-type sqlAll struct{ Els []sqlNode }
+type sqlAll struct{ els []sqlNode }
 
-type sqlAny struct{ Els []sqlNode }
+type sqlAny struct{ els []sqlNode }
 
-type sqlEq struct{ Left, Right sqlNode }
+type sqlEq struct{ left, right sqlNode }
 
-type sqlLt struct{ Left, Right sqlNode }
+type sqlLt struct{ left, right sqlNode }
 
-type sqlGt struct{ Left, Right sqlNode }
+type sqlGt struct{ left, right sqlNode }
 
-type sqlIsNull struct{ Operand sqlNode }
+type sqlIsNull struct{ operand sqlNode }
 
-type sqlIsNotNull struct{ Operand sqlNode }
+type sqlIsNotNull struct{ operand sqlNode }
 
-type sqlFragment struct{ Els []sqlNode }
+type sqlFragment struct{ els []sqlNode }
 
 // Marker method implementations
 func (sqlN) isSQL()         {}
@@ -48,10 +48,10 @@ func (sqlIsNotNull) isSQL() {}
 func (sqlFragment) isSQL()  {}
 
 type join struct {
-	Type  string // "JOIN" | "LEFT JOIN"
-	Table sqlNode
-	Alias sqlNode
-	On    sqlNode
+	typ   string // "JOIN" | "LEFT JOIN"
+	table sqlNode
+	alias sqlNode
+	on    sqlNode
 }
 
 // OrderExpr is an opaque ORDER BY expression created by Query.Asc or Query.Desc.
@@ -62,16 +62,16 @@ type OrderExpr struct {
 }
 
 type sqlQuery struct {
-	Select    []sqlNode
-	FromTable sqlNode
-	FromAlias sqlNode
-	Joins     []join
-	Where     *sqlNode
-	OrderBys  []OrderExpr
-	GroupBy   []sqlNode
-	Having    *sqlNode
-	Limit     *sqlNode
-	Offset    *sqlNode
+	selectColumns []sqlNode
+	fromTable     sqlNode
+	fromAlias     sqlNode
+	joins         []join
+	where         *sqlNode
+	orderBys      []OrderExpr
+	groupBy       []sqlNode
+	having        *sqlNode
+	limit         *sqlNode
+	offset        *sqlNode
 }
 
 func parseSQL(sql string, params ...any) sqlNode {
@@ -95,13 +95,13 @@ func parseSQL(sql string, params ...any) sqlNode {
 		} else if ch == '?' && !inSingleQuote && !inDoubleQuote {
 			// Only treat ? as parameter placeholder if not inside quotes
 			if textBuilder.Len() > 0 {
-				tokens = append(tokens, sqlText{Text: textBuilder.String()})
+				tokens = append(tokens, sqlText{text: textBuilder.String()})
 				textBuilder.Reset()
 			}
 			if paramIdx >= len(params) {
 				panic(fmt.Sprintf("Not enough parameters: expected at least %d, got %d", paramIdx+1, len(params)))
 			}
-			tokens = append(tokens, sqlParam{Value: params[paramIdx]})
+			tokens = append(tokens, sqlParam{value: params[paramIdx]})
 			paramIdx++
 		} else {
 			textBuilder.WriteByte(ch)
@@ -109,12 +109,12 @@ func parseSQL(sql string, params ...any) sqlNode {
 	}
 
 	if textBuilder.Len() > 0 {
-		tokens = append(tokens, sqlText{Text: textBuilder.String()})
+		tokens = append(tokens, sqlText{text: textBuilder.String()})
 	}
 
 	if paramIdx != len(params) {
 		panic(fmt.Sprintf("Too many parameters: expected %d, got %d", paramIdx, len(params)))
 	}
 
-	return sqlFragment{Els: tokens}
+	return sqlFragment{els: tokens}
 }

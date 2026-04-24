@@ -107,24 +107,24 @@ func (b *sqliteBackend) hasSQLiteSequence(ctx context.Context) (bool, error) {
 func (b *sqliteBackend) renderSQL(sql sqlNode, args *[]any) {
 	switch v := sql.(type) {
 	case sqlN:
-		b.quoteIdentifier(v.Part)
+		b.quoteIdentifier(v.part)
 	case sqlQN:
-		if v.Part1 == "" {
-			b.quoteIdentifier(v.Part2)
+		if v.part1 == "" {
+			b.quoteIdentifier(v.part2)
 		} else {
-			b.quoteIdentifier(v.Part1)
+			b.quoteIdentifier(v.part1)
 			b.writeByte('.')
-			b.quoteIdentifier(v.Part2)
+			b.quoteIdentifier(v.part2)
 		}
 	case sqlText:
-		b.writeString(v.Text)
+		b.writeString(v.text)
 	case sqlParam:
 		b.paramIndex++
-		*args = append(*args, v.Value)
+		*args = append(*args, v.value)
 		b.writeByte('?')
 	case sqlAll:
 		b.writeByte('(')
-		for i, el := range v.Els {
+		for i, el := range v.els {
 			if i > 0 {
 				b.writeString(" AND ")
 			}
@@ -133,7 +133,7 @@ func (b *sqliteBackend) renderSQL(sql sqlNode, args *[]any) {
 		b.writeByte(')')
 	case sqlAny:
 		b.writeByte('(')
-		for i, el := range v.Els {
+		for i, el := range v.els {
 			if i > 0 {
 				b.writeString(" OR ")
 			}
@@ -141,25 +141,25 @@ func (b *sqliteBackend) renderSQL(sql sqlNode, args *[]any) {
 		}
 		b.writeByte(')')
 	case sqlEq:
-		b.renderSQL(v.Left, args)
+		b.renderSQL(v.left, args)
 		b.writeString(" = ")
-		b.renderSQL(v.Right, args)
+		b.renderSQL(v.right, args)
 	case sqlLt:
-		b.renderSQL(v.Left, args)
+		b.renderSQL(v.left, args)
 		b.writeString(" < ")
-		b.renderSQL(v.Right, args)
+		b.renderSQL(v.right, args)
 	case sqlGt:
-		b.renderSQL(v.Left, args)
+		b.renderSQL(v.left, args)
 		b.writeString(" > ")
-		b.renderSQL(v.Right, args)
+		b.renderSQL(v.right, args)
 	case sqlIsNull:
-		b.renderSQL(v.Operand, args)
+		b.renderSQL(v.operand, args)
 		b.writeString(" IS NULL")
 	case sqlIsNotNull:
-		b.renderSQL(v.Operand, args)
+		b.renderSQL(v.operand, args)
 		b.writeString(" IS NOT NULL")
 	case sqlFragment:
-		for _, el := range v.Els {
+		for _, el := range v.els {
 			b.renderSQL(el, args)
 		}
 	}
@@ -170,9 +170,9 @@ func (b *sqliteBackend) renderSQLQuery(stmt sqlQuery) (string, []any) {
 	b.resetArgsBuffer(32)
 	b.resetSQLBuffer(512)
 
-	if len(stmt.Select) > 0 {
+	if len(stmt.selectColumns) > 0 {
 		b.writeString("SELECT ")
-		for i, sel := range stmt.Select {
+		for i, sel := range stmt.selectColumns {
 			if i > 0 {
 				b.writeString(", ")
 			}
@@ -181,29 +181,29 @@ func (b *sqliteBackend) renderSQLQuery(stmt sqlQuery) (string, []any) {
 	}
 
 	b.writeString(" FROM ")
-	b.renderSQL(stmt.FromTable, &b.argsBuffer)
+	b.renderSQL(stmt.fromTable, &b.argsBuffer)
 	b.writeString(" AS ")
-	b.renderSQL(stmt.FromAlias, &b.argsBuffer)
+	b.renderSQL(stmt.fromAlias, &b.argsBuffer)
 
-	for _, join := range stmt.Joins {
+	for _, join := range stmt.joins {
 		b.writeByte(' ')
-		b.writeString(join.Type)
+		b.writeString(join.typ)
 		b.writeByte(' ')
-		b.renderSQL(join.Table, &b.argsBuffer)
+		b.renderSQL(join.table, &b.argsBuffer)
 		b.writeString(" AS ")
-		b.renderSQL(join.Alias, &b.argsBuffer)
+		b.renderSQL(join.alias, &b.argsBuffer)
 		b.writeString(" ON ")
-		b.renderSQL(join.On, &b.argsBuffer)
+		b.renderSQL(join.on, &b.argsBuffer)
 	}
 
-	if stmt.Where != nil {
+	if stmt.where != nil {
 		b.writeString(" WHERE ")
-		b.renderSQL(*stmt.Where, &b.argsBuffer)
+		b.renderSQL(*stmt.where, &b.argsBuffer)
 	}
 
-	if len(stmt.GroupBy) > 0 {
+	if len(stmt.groupBy) > 0 {
 		b.writeString(" GROUP BY ")
-		for i, gb := range stmt.GroupBy {
+		for i, gb := range stmt.groupBy {
 			if i > 0 {
 				b.writeString(", ")
 			}
@@ -211,14 +211,14 @@ func (b *sqliteBackend) renderSQLQuery(stmt sqlQuery) (string, []any) {
 		}
 	}
 
-	if stmt.Having != nil {
+	if stmt.having != nil {
 		b.writeString(" HAVING ")
-		b.renderSQL(*stmt.Having, &b.argsBuffer)
+		b.renderSQL(*stmt.having, &b.argsBuffer)
 	}
 
-	if len(stmt.OrderBys) > 0 {
+	if len(stmt.orderBys) > 0 {
 		b.writeString(" ORDER BY ")
-		for i, ob := range stmt.OrderBys {
+		for i, ob := range stmt.orderBys {
 			if i > 0 {
 				b.writeString(", ")
 			}
@@ -240,14 +240,14 @@ func (b *sqliteBackend) renderSQLQuery(stmt sqlQuery) (string, []any) {
 		}
 	}
 
-	if stmt.Limit != nil {
+	if stmt.limit != nil {
 		b.writeString(" LIMIT ")
-		b.renderSQL(*stmt.Limit, &b.argsBuffer)
+		b.renderSQL(*stmt.limit, &b.argsBuffer)
 	}
 
-	if stmt.Offset != nil {
+	if stmt.offset != nil {
 		b.writeString(" OFFSET ")
-		b.renderSQL(*stmt.Offset, &b.argsBuffer)
+		b.renderSQL(*stmt.offset, &b.argsBuffer)
 	}
 
 	return b.sqlString(), b.argsBuffer
@@ -257,13 +257,13 @@ func (b *sqliteBackend) renderSQLQuery(stmt sqlQuery) (string, []any) {
 // Query format: WITH keys (col1, col2) AS (VALUES (?,?), (?,?)) SELECT table.col1, table.col2 FROM table JOIN keys ON ...
 func (b *sqliteBackend) renderSelect(stmt loadRowsOp, chunk [][]any) (string, []any) {
 	b.paramIndex = 0
-	numKeyColumns := len(stmt.KeyColumns)
+	numKeyColumns := len(stmt.keyColumns)
 	b.resetArgsBuffer(len(chunk) * numKeyColumns)
 
 	b.resetSQLBuffer(512)
 
 	b.writeString("WITH keys (")
-	for i, col := range stmt.KeyColumns {
+	for i, col := range stmt.keyColumns {
 		if i > 0 {
 			b.writeString(", ")
 		}
@@ -276,7 +276,7 @@ func (b *sqliteBackend) renderSelect(stmt loadRowsOp, chunk [][]any) (string, []
 			b.writeString(", ")
 		}
 		b.writeByte('(')
-		for j := range stmt.KeyColumns {
+		for j := range stmt.keyColumns {
 			if j > 0 {
 				b.writeString(", ")
 			}
@@ -289,28 +289,28 @@ func (b *sqliteBackend) renderSelect(stmt loadRowsOp, chunk [][]any) (string, []
 	b.writeString(") ")
 
 	b.writeString("SELECT ")
-	for i, col := range stmt.Select {
+	for i, col := range stmt.selectColumns {
 		if i > 0 {
 			b.writeString(", ")
 		}
-		b.quoteIdentifier(stmt.Table)
+		b.quoteIdentifier(stmt.table)
 		b.writeByte('.')
 		b.quoteIdentifier(col)
 	}
 
 	b.writeString(" FROM ")
-	b.quoteIdentifier(stmt.Table)
+	b.quoteIdentifier(stmt.table)
 
 	b.writeString(" JOIN keys ON ")
-	for j := range stmt.KeyColumns {
+	for j := range stmt.keyColumns {
 		if j > 0 {
 			b.writeString(" AND ")
 		}
-		b.quoteIdentifier(stmt.Table)
+		b.quoteIdentifier(stmt.table)
 		b.writeByte('.')
-		b.quoteIdentifier(stmt.KeyColumns[j])
+		b.quoteIdentifier(stmt.keyColumns[j])
 		b.writeString(" = keys.")
-		b.quoteIdentifier(stmt.KeyColumns[j])
+		b.quoteIdentifier(stmt.keyColumns[j])
 	}
 
 	return b.sqlString(), b.argsBuffer
@@ -318,12 +318,12 @@ func (b *sqliteBackend) renderSelect(stmt loadRowsOp, chunk [][]any) (string, []
 
 func (b *sqliteBackend) renderSelectExistingKeys(stmt keyScanOp, chunk [][]any) (string, []any) {
 	b.paramIndex = 0
-	numKeyColumns := len(stmt.KeyColumns)
+	numKeyColumns := len(stmt.keyColumns)
 	b.resetArgsBuffer(len(chunk) * numKeyColumns)
 	b.resetSQLBuffer(512)
 
 	b.writeString("WITH keys (")
-	for i, col := range stmt.KeyColumns {
+	for i, col := range stmt.keyColumns {
 		if i > 0 {
 			b.writeString(", ")
 		}
@@ -336,7 +336,7 @@ func (b *sqliteBackend) renderSelectExistingKeys(stmt keyScanOp, chunk [][]any) 
 			b.writeString(", ")
 		}
 		b.writeByte('(')
-		for j := range stmt.KeyColumns {
+		for j := range stmt.keyColumns {
 			if j > 0 {
 				b.writeString(", ")
 			}
@@ -349,7 +349,7 @@ func (b *sqliteBackend) renderSelectExistingKeys(stmt keyScanOp, chunk [][]any) 
 	b.writeString(") ")
 
 	b.writeString("SELECT ")
-	for i, col := range stmt.KeyColumns {
+	for i, col := range stmt.keyColumns {
 		if i > 0 {
 			b.writeString(", ")
 		}
@@ -358,13 +358,13 @@ func (b *sqliteBackend) renderSelectExistingKeys(stmt keyScanOp, chunk [][]any) 
 	}
 
 	b.writeString(" FROM keys JOIN ")
-	b.quoteIdentifier(stmt.Table)
+	b.quoteIdentifier(stmt.table)
 	b.writeString(" ON ")
-	for i, col := range stmt.KeyColumns {
+	for i, col := range stmt.keyColumns {
 		if i > 0 {
 			b.writeString(" AND ")
 		}
-		b.quoteIdentifier(stmt.Table)
+		b.quoteIdentifier(stmt.table)
 		b.writeByte('.')
 		b.quoteIdentifier(col)
 		b.writeString(" = keys.")
@@ -414,7 +414,7 @@ func (b *sqliteBackend) renderGeneratedInsertRows(stmt saveRowsOp, indexes []int
 	}
 	b.writeByte(')')
 
-	generatedColumn := generatedPrimaryFields[0].Column
+	generatedColumn := generatedPrimaryFields[0].column
 	b.writeString(", base (")
 	b.quoteIdentifier("$base")
 	b.writeString(") AS (SELECT ")
@@ -422,14 +422,14 @@ func (b *sqliteBackend) renderGeneratedInsertRows(stmt saveRowsOp, indexes []int
 		b.writeString("MAX(COALESCE((SELECT seq FROM sqlite_sequence WHERE name = ?), 0), COALESCE((SELECT MAX(")
 		b.quoteIdentifier(generatedColumn)
 		b.writeString(") FROM ")
-		b.quoteIdentifier(stmt.Table)
+		b.quoteIdentifier(stmt.table)
 		b.writeString("), 0))")
-		b.argsBuffer = append(b.argsBuffer, stmt.Table)
+		b.argsBuffer = append(b.argsBuffer, stmt.table)
 	} else {
 		b.writeString("COALESCE(MAX(")
 		b.quoteIdentifier(generatedColumn)
 		b.writeString("), 0) FROM ")
-		b.quoteIdentifier(stmt.Table)
+		b.quoteIdentifier(stmt.table)
 	}
 	b.writeByte(')')
 
@@ -448,7 +448,7 @@ func (b *sqliteBackend) renderGeneratedInsertRows(stmt saveRowsOp, indexes []int
 	b.writeString(" FROM new_rows CROSS JOIN base)")
 
 	b.writeString(" INSERT INTO ")
-	b.quoteIdentifier(stmt.Table)
+	b.quoteIdentifier(stmt.table)
 	b.writeString(" (")
 	insertWithGenerated := stmt.insertColumnsWithGeneratedPrimary()
 	for i, col := range insertWithGenerated {
@@ -467,9 +467,9 @@ func (b *sqliteBackend) renderGeneratedInsertRows(stmt saveRowsOp, indexes []int
 	b.writeString(" FROM allocated ORDER BY ")
 	b.quoteIdentifier("$i")
 
-	if len(stmt.Returning) > 0 {
+	if len(stmt.returning) > 0 {
 		b.writeString(" RETURNING ")
-		for i, col := range stmt.Returning {
+		for i, col := range stmt.returning {
 			if i > 0 {
 				b.writeString(", ")
 			}
@@ -514,7 +514,7 @@ func (b *sqliteBackend) renderInsertRows(stmt saveRowsOp, rows []saveRow) (strin
 	b.writeString(") ")
 
 	b.writeString("INSERT INTO ")
-	b.quoteIdentifier(stmt.Table)
+	b.quoteIdentifier(stmt.table)
 	b.writeString(" (")
 	for i, col := range insertColumns {
 		if i > 0 {
@@ -531,9 +531,9 @@ func (b *sqliteBackend) renderInsertRows(stmt saveRowsOp, rows []saveRow) (strin
 	}
 	b.writeString(" FROM new_rows")
 
-	if len(stmt.Returning) > 0 {
+	if len(stmt.returning) > 0 {
 		b.writeString(" RETURNING ")
-		for i, col := range stmt.Returning {
+		for i, col := range stmt.returning {
 			if i > 0 {
 				b.writeString(", ")
 			}
@@ -575,12 +575,12 @@ func (b *sqliteBackend) renderUpdateRows(stmt saveRowsOp, rows []saveRow) (strin
 			}
 			b.writeByte('?')
 			b.paramIndex++
-			b.argsBuffer = append(b.argsBuffer, row.Values[j])
+			b.argsBuffer = append(b.argsBuffer, row.values[j])
 		}
 		b.writeByte(')')
 	}
 	b.writeString(") UPDATE ")
-	b.quoteIdentifier(stmt.Table)
+	b.quoteIdentifier(stmt.table)
 	b.writeString(" SET ")
 	for i, col := range updateColumns {
 		if i > 0 {
@@ -595,16 +595,16 @@ func (b *sqliteBackend) renderUpdateRows(stmt saveRowsOp, rows []saveRow) (strin
 		if i > 0 {
 			b.writeString(" AND ")
 		}
-		b.quoteIdentifier(stmt.Table)
+		b.quoteIdentifier(stmt.table)
 		b.writeByte('.')
 		b.quoteIdentifier(col)
 		b.writeString(" = new_rows.")
 		b.quoteIdentifier(col)
 	}
 
-	if len(stmt.Returning) > 0 {
+	if len(stmt.returning) > 0 {
 		b.writeString(" RETURNING ")
-		for i, col := range stmt.Returning {
+		for i, col := range stmt.returning {
 			if i > 0 {
 				b.writeString(", ")
 			}
@@ -619,13 +619,13 @@ func (b *sqliteBackend) renderUpdateRows(stmt saveRowsOp, rows []saveRow) (strin
 // Query format: WITH keys (id) AS (VALUES (?), (?)) DELETE FROM table WHERE id IN (SELECT id FROM keys)
 func (b *sqliteBackend) renderDelete(stmt deleteRowsOp, chunk [][]any) (string, []any) {
 	b.paramIndex = 0
-	numKeyColumns := len(stmt.KeyColumns)
+	numKeyColumns := len(stmt.keyColumns)
 	b.resetArgsBuffer(len(chunk) * numKeyColumns)
 
 	b.resetSQLBuffer(512)
 
 	b.writeString("WITH keys (")
-	for i, col := range stmt.KeyColumns {
+	for i, col := range stmt.keyColumns {
 		if i > 0 {
 			b.writeString(", ")
 		}
@@ -638,7 +638,7 @@ func (b *sqliteBackend) renderDelete(stmt deleteRowsOp, chunk [][]any) (string, 
 			b.writeString(", ")
 		}
 		b.writeByte('(')
-		for j := range stmt.KeyColumns {
+		for j := range stmt.keyColumns {
 			if j > 0 {
 				b.writeString(", ")
 			}
@@ -651,24 +651,24 @@ func (b *sqliteBackend) renderDelete(stmt deleteRowsOp, chunk [][]any) (string, 
 	b.writeString(") ")
 
 	b.writeString("DELETE FROM ")
-	b.quoteIdentifier(stmt.Table)
+	b.quoteIdentifier(stmt.table)
 	b.writeString(" WHERE ")
 
 	if numKeyColumns == 1 {
-		b.quoteIdentifier(stmt.KeyColumns[0])
+		b.quoteIdentifier(stmt.keyColumns[0])
 		b.writeString(" IN (SELECT ")
-		b.quoteIdentifier(stmt.KeyColumns[0])
+		b.quoteIdentifier(stmt.keyColumns[0])
 		b.writeString(" FROM keys)")
 	} else {
 		b.writeByte('(')
-		for i, col := range stmt.KeyColumns {
+		for i, col := range stmt.keyColumns {
 			if i > 0 {
 				b.writeString(", ")
 			}
 			b.quoteIdentifier(col)
 		}
 		b.writeString(") IN (SELECT ")
-		for i, col := range stmt.KeyColumns {
+		for i, col := range stmt.keyColumns {
 			if i > 0 {
 				b.writeString(", ")
 			}
@@ -682,11 +682,11 @@ func (b *sqliteBackend) renderDelete(stmt deleteRowsOp, chunk [][]any) (string, 
 
 func (b *sqliteBackend) renderSelectMissingChildren(stmt selectMissingChildrenOp, parentRows, keepRows [][]any) (string, []any) {
 	b.paramIndex = 0
-	b.resetArgsBuffer(len(parentRows)*len(stmt.ParentKeyColumns) + len(keepRows)*(len(stmt.ParentKeyColumns)+len(stmt.ChildKeyColumns)))
+	b.resetArgsBuffer(len(parentRows)*len(stmt.parentKeyColumns) + len(keepRows)*(len(stmt.parentKeyColumns)+len(stmt.childKeyColumns)))
 	b.resetSQLBuffer(512)
 
 	b.writeString("WITH parent_rows (")
-	for i := range stmt.ParentKeyColumns {
+	for i := range stmt.parentKeyColumns {
 		if i > 0 {
 			b.writeString(", ")
 		}
@@ -698,7 +698,7 @@ func (b *sqliteBackend) renderSelectMissingChildren(stmt selectMissingChildrenOp
 			b.writeString(", ")
 		}
 		b.writeByte('(')
-		for j := range stmt.ParentKeyColumns {
+		for j := range stmt.parentKeyColumns {
 			if j > 0 {
 				b.writeString(", ")
 			}
@@ -712,11 +712,11 @@ func (b *sqliteBackend) renderSelectMissingChildren(stmt selectMissingChildrenOp
 
 	if len(keepRows) > 0 {
 		b.writeString(", keep_rows (")
-		keepColumns := make([]string, 0, len(stmt.ParentKeyColumns)+len(stmt.ChildKeyColumns))
-		for i := range stmt.ParentKeyColumns {
+		keepColumns := make([]string, 0, len(stmt.parentKeyColumns)+len(stmt.childKeyColumns))
+		for i := range stmt.parentKeyColumns {
 			keepColumns = append(keepColumns, "p"+strconv.Itoa(i))
 		}
-		for i := range stmt.ChildKeyColumns {
+		for i := range stmt.childKeyColumns {
 			keepColumns = append(keepColumns, "c"+strconv.Itoa(i))
 		}
 		for i, alias := range keepColumns {
@@ -745,23 +745,23 @@ func (b *sqliteBackend) renderSelectMissingChildren(stmt selectMissingChildrenOp
 	}
 
 	b.writeString(" SELECT ")
-	for i, col := range stmt.ChildKeyColumns {
+	for i, col := range stmt.childKeyColumns {
 		if i > 0 {
 			b.writeString(", ")
 		}
-		b.quoteIdentifier(stmt.Table)
+		b.quoteIdentifier(stmt.table)
 		b.writeByte('.')
 		b.quoteIdentifier(col)
 	}
 
 	b.writeString(" FROM ")
-	b.quoteIdentifier(stmt.Table)
+	b.quoteIdentifier(stmt.table)
 	b.writeString(" JOIN parent_rows ON ")
-	for i, col := range stmt.ParentKeyColumns {
+	for i, col := range stmt.parentKeyColumns {
 		if i > 0 {
 			b.writeString(" AND ")
 		}
-		b.quoteIdentifier(stmt.Table)
+		b.quoteIdentifier(stmt.table)
 		b.writeByte('.')
 		b.quoteIdentifier(col)
 		b.writeString(" = parent_rows.")
@@ -770,21 +770,21 @@ func (b *sqliteBackend) renderSelectMissingChildren(stmt selectMissingChildrenOp
 
 	if len(keepRows) > 0 {
 		b.writeString(" LEFT JOIN keep_rows ON ")
-		for i, col := range stmt.ParentKeyColumns {
+		for i, col := range stmt.parentKeyColumns {
 			if i > 0 {
 				b.writeString(" AND ")
 			}
-			b.quoteIdentifier(stmt.Table)
+			b.quoteIdentifier(stmt.table)
 			b.writeByte('.')
 			b.quoteIdentifier(col)
 			b.writeString(" = keep_rows.")
 			b.quoteIdentifier("p" + strconv.Itoa(i))
 		}
-		for i, col := range stmt.ChildKeyColumns {
-			if len(stmt.ParentKeyColumns)+i > 0 {
+		for i, col := range stmt.childKeyColumns {
+			if len(stmt.parentKeyColumns)+i > 0 {
 				b.writeString(" AND ")
 			}
-			b.quoteIdentifier(stmt.Table)
+			b.quoteIdentifier(stmt.table)
 			b.writeByte('.')
 			b.quoteIdentifier(col)
 			b.writeString(" = keep_rows.")
@@ -799,11 +799,11 @@ func (b *sqliteBackend) renderSelectMissingChildren(stmt selectMissingChildrenOp
 }
 
 func (b *sqliteBackend) LoadByKeys(ctx context.Context, op loadRowsOp) (rows, error) {
-	if len(op.Keys) == 0 {
+	if len(op.keys) == 0 {
 		return &emptyRows{}, nil
 	}
 
-	query, args := b.renderSelect(op, rowsFromKeys(op.Keys))
+	query, args := b.renderSelect(op, rowsFromKeys(op.keys))
 	return b.queryContext(ctx, query, args...)
 }
 
@@ -812,17 +812,17 @@ func (b *sqliteBackend) LoadByParentKeys(ctx context.Context, op loadRowsOp) (ro
 }
 
 func (b *sqliteBackend) SelectExistingKeys(ctx context.Context, op keyScanOp) ([]Key, error) {
-	if len(op.Keys) == 0 {
+	if len(op.keys) == 0 {
 		return nil, nil
 	}
 
-	query, args := b.renderSelectExistingKeys(op, rowsFromKeys(op.Keys))
+	query, args := b.renderSelectExistingKeys(op, rowsFromKeys(op.keys))
 	rowSet, err := b.queryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = rowSet.Close() }()
-	return scanTypedKeys(rowSet, op.KeyTypes)
+	return scanTypedKeys(rowSet, op.keyTypes)
 }
 
 func (b *sqliteBackend) InsertRows(ctx context.Context, op saveRowsOp, rows []plannedRow) ([]savedRow, error) {
@@ -872,7 +872,7 @@ func (b *sqliteBackend) insertGeneratedRows(ctx context.Context, op saveRowsOp, 
 	}
 	defer func() { _ = rowSet.Close() }()
 
-	valueRows, err := scanValueRows(rowSet, len(op.Returning))
+	valueRows, err := scanValueRows(rowSet, len(op.returning))
 	if err != nil {
 		return nil, err
 	}
@@ -906,12 +906,12 @@ func (b *sqliteBackend) UpdateRows(ctx context.Context, op saveRowsOp, rows []pl
 }
 
 func (b *sqliteBackend) SelectMissingChildren(ctx context.Context, op selectMissingChildrenOp) ([]Key, error) {
-	if len(op.ParentKeys) == 0 {
+	if len(op.parentKeys) == 0 {
 		return nil, nil
 	}
 
-	parentRows := rowsFromKeys(op.ParentKeys)
-	keepRows := keepRowsFromPairs(op.KeepPairs)
+	parentRows := rowsFromKeys(op.parentKeys)
+	keepRows := keepRowsFromPairs(op.keepPairs)
 
 	query, args := b.renderSelectMissingChildren(op, parentRows, keepRows)
 	rowSet, err := b.queryContext(ctx, query, args...)
@@ -919,7 +919,7 @@ func (b *sqliteBackend) SelectMissingChildren(ctx context.Context, op selectMiss
 		return nil, err
 	}
 	defer func() { _ = rowSet.Close() }()
-	return scanKeys(rowSet, len(op.ChildKeyColumns))
+	return scanKeys(rowSet, len(op.childKeyColumns))
 }
 
 func (b *sqliteBackend) DeleteRowsByKeys(ctx context.Context, op deleteRowsOp) error {
@@ -927,11 +927,11 @@ func (b *sqliteBackend) DeleteRowsByKeys(ctx context.Context, op deleteRowsOp) e
 }
 
 func (b *sqliteBackend) deleteRows(ctx context.Context, op deleteRowsOp) error {
-	if len(op.Keys) == 0 {
+	if len(op.keys) == 0 {
 		return nil
 	}
 
-	query, args := b.renderDelete(op, rowsFromKeys(op.Keys))
+	query, args := b.renderDelete(op, rowsFromKeys(op.keys))
 
 	_, err := b.execContext(ctx, query, args...)
 	return err
@@ -944,8 +944,8 @@ func (b *sqliteBackend) FetchQuery(ctx context.Context, stmt sqlQuery) (rows, er
 
 func (b *sqliteBackend) CountQuery(ctx context.Context, stmt sqlQuery) (int64, error) {
 	innerStmt := stmt
-	innerStmt.Limit = nil
-	innerStmt.Offset = nil
+	innerStmt.limit = nil
+	innerStmt.offset = nil
 
 	innerQuery, args := b.renderSQLQuery(innerStmt)
 	countQuery := fmt.Sprintf("SELECT COUNT(*) FROM (%s) AS count_subquery", innerQuery)

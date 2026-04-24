@@ -10,8 +10,8 @@ func splitPlannedRows(rows []plannedRow) ([]int, []saveRow) {
 	indexes := make([]int, len(rows))
 	saveRows := make([]saveRow, len(rows))
 	for i, row := range rows {
-		indexes[i] = row.Index
-		saveRows[i] = row.Row
+		indexes[i] = row.index
+		saveRows[i] = row.row
 	}
 	return indexes, saveRows
 }
@@ -19,7 +19,7 @@ func splitPlannedRows(rows []plannedRow) ([]int, []saveRow) {
 func keysFromPlannedRows(op saveRowsOp, rows []plannedRow) []Key {
 	keys := make([]Key, len(rows))
 	for i, row := range rows {
-		keys[i] = op.keyFromRow(row.Row)
+		keys[i] = op.keyFromRow(row.row)
 	}
 	return keys
 }
@@ -42,7 +42,7 @@ func scanKeyedSavedRows(op saveRowsOp, indexes []int, saveRows []saveRow, rowSet
 		inputByKey[key] = indexes[i]
 	}
 
-	valueRows, err := scanValueRows(rowSet, len(op.Returning))
+	valueRows, err := scanValueRows(rowSet, len(op.returning))
 	if err != nil {
 		return nil, err
 	}
@@ -54,7 +54,7 @@ func scanKeyedSavedRows(op saveRowsOp, indexes []int, saveRows []saveRow, rowSet
 		if !ok {
 			return nil, fmt.Errorf("returned key %v does not match any input row", key)
 		}
-		saved = append(saved, savedRow{Index: index, Values: values})
+		saved = append(saved, savedRow{index: index, values: values})
 	}
 	return saved, nil
 }
@@ -73,7 +73,7 @@ func scanIndexedSavedRows(rowSet rows, returningColumns int) ([]savedRow, error)
 		}
 		values := make([]any, returningColumns)
 		copy(values, row[1:])
-		saved = append(saved, savedRow{Index: index, Values: values})
+		saved = append(saved, savedRow{index: index, values: values})
 	}
 	return saved, nil
 }
@@ -108,7 +108,7 @@ func savedRowsBySingleIntKeyOrder(op saveRowsOp, indexes []int, valueRows [][]an
 
 	saved := make([]savedRow, len(keyed))
 	for i, row := range keyed {
-		saved[i] = savedRow{Index: sortedIndexes[i], Values: row.values}
+		saved[i] = savedRow{index: sortedIndexes[i], values: row.values}
 	}
 	return saved, nil
 }
@@ -158,12 +158,12 @@ func int64FromDB(value any) (int64, error) {
 func keepRowsFromPairs(pairs []keepPair) [][]any {
 	keepRows := make([][]any, len(pairs))
 	for i, pair := range pairs {
-		row := make([]any, 0, pair.ParentKey.Length()+pair.ChildKey.Length())
-		for j := 0; j < pair.ParentKey.Length(); j++ {
-			row = append(row, pair.ParentKey.At(j))
+		row := make([]any, 0, pair.parentKey.Length()+pair.childKey.Length())
+		for j := 0; j < pair.parentKey.Length(); j++ {
+			row = append(row, pair.parentKey.At(j))
 		}
-		for j := 0; j < pair.ChildKey.Length(); j++ {
-			row = append(row, pair.ChildKey.At(j))
+		for j := 0; j < pair.childKey.Length(); j++ {
+			row = append(row, pair.childKey.At(j))
 		}
 		keepRows[i] = row
 	}

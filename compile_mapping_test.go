@@ -67,48 +67,48 @@ func TestCompileBuildsMappings(t *testing.T) {
 	if parent == nil {
 		t.Fatal("expected parent mapping")
 	}
-	if parent.Schema != "app" || parent.Table != "parents" {
-		t.Fatalf("unexpected table mapping: schema=%q table=%q", parent.Schema, parent.Table)
+	if parent.schema != "app" || parent.table != "parents" {
+		t.Fatalf("unexpected table mapping: schema=%q table=%q", parent.schema, parent.table)
 	}
-	if got := parent.FieldMap["Name"].Column; got != "display_name" {
+	if got := parent.fieldMap["Name"].column; got != "display_name" {
 		t.Fatalf("expected custom column display_name, got %q", got)
 	}
-	if _, ok := parent.FieldMap["Ignored"]; ok {
+	if _, ok := parent.fieldMap["Ignored"]; ok {
 		t.Fatal("ignored field should not be mapped")
 	}
-	if _, ok := parent.FieldMap["Loose"]; ok {
+	if _, ok := parent.fieldMap["Loose"]; ok {
 		t.Fatal("unregistered struct pointer should not be mapped as scalar field")
 	}
-	if _, ok := parent.FieldMap["Numbers"]; ok {
+	if _, ok := parent.fieldMap["Numbers"]; ok {
 		t.Fatal("slice of non-entity should not be mapped")
 	}
-	if !reflect.DeepEqual(parent.PrimaryKey, []string{"ID"}) {
-		t.Fatalf("expected default ID primary key, got %#v", parent.PrimaryKey)
+	if !reflect.DeepEqual(parent.primaryKey, []string{"ID"}) {
+		t.Fatalf("expected default ID primary key, got %#v", parent.primaryKey)
 	}
-	if !reflect.DeepEqual(parent.Insertable, []string{"Name", "WriteOnce"}) {
-		t.Fatalf("unexpected insertable fields: %#v", parent.Insertable)
+	if !reflect.DeepEqual(parent.insertable, []string{"Name", "WriteOnce"}) {
+		t.Fatalf("unexpected insertable fields: %#v", parent.insertable)
 	}
-	if !reflect.DeepEqual(parent.Updatable, []string{"Name"}) {
-		t.Fatalf("unexpected updatable fields: %#v", parent.Updatable)
+	if !reflect.DeepEqual(parent.updatable, []string{"Name"}) {
+		t.Fatalf("unexpected updatable fields: %#v", parent.updatable)
 	}
 
-	if child := parent.ChildMap["Children"]; child == nil || child.Singular || child.Target != reflect.TypeOf(mappingTestChild{}) {
+	if child := parent.childMap["Children"]; child == nil || child.singular || child.target != reflect.TypeOf(mappingTestChild{}) {
 		t.Fatalf("expected plural child mapping, got %#v", child)
 	}
-	if child := parent.ChildMap["Note"]; child == nil || !child.Singular || child.Target != reflect.TypeOf(mappingTestNote{}) {
+	if child := parent.childMap["Note"]; child == nil || !child.singular || child.target != reflect.TypeOf(mappingTestNote{}) {
 		t.Fatalf("expected singular child mapping, got %#v", child)
 	}
 
 	child := mapper.mappings[reflect.TypeOf(mappingTestChild{})]
-	if !reflect.DeepEqual(child.ParentalKey, []string{"ParentID"}) {
-		t.Fatalf("expected parental key ParentID, got %#v", child.ParentalKey)
+	if !reflect.DeepEqual(child.parentalKey, []string{"ParentID"}) {
+		t.Fatalf("expected parental key ParentID, got %#v", child.parentalKey)
 	}
 
 	composite := mapper.mappings[reflect.TypeOf(mappingTestComposite{})]
-	if !reflect.DeepEqual(composite.PrimaryKey, []string{"Key1", "Key2"}) {
-		t.Fatalf("expected composite primary key, got %#v", composite.PrimaryKey)
+	if !reflect.DeepEqual(composite.primaryKey, []string{"Key1", "Key2"}) {
+		t.Fatalf("expected composite primary key, got %#v", composite.primaryKey)
 	}
-	key := composite.ExtractKey(&mappingTestComposite{Key1: 7, Key2: "x"}, composite.PrimaryKey)
+	key := composite.extractKey(&mappingTestComposite{Key1: 7, Key2: "x"}, composite.primaryKey)
 	if key != NewKey(7, "x") {
 		t.Fatalf("unexpected composite key: %#v", key)
 	}

@@ -3,6 +3,7 @@ package ormapper
 import (
 	"fmt"
 	"reflect"
+	"strings"
 )
 
 // Mapping is an opaque entity registration created by Map and consumed by Compile.
@@ -107,6 +108,83 @@ type entityMetadata struct {
 	Fields []fieldMetadata
 }
 
+type fieldMetadata struct {
+	// Structural metadata (from reflect)
+	name       string
+	typ        reflect.Type
+	fieldIndex int // Index of the field in the struct (for reflect.Value.Field)
+
+	// Tag parsing results
+	primaryTag    bool
+	parentalTag   bool
+	childTag      bool
+	skipInsertTag bool
+	skipUpdateTag bool
+	ignoreTag     bool
+	columnTag     string // Custom column name from tag, "" if not specified
+
+	// Computed values
+	defaultColumn string // snake_case version of name
+}
+
+func analyzeStruct(structType reflect.Type) []fieldMetadata {
+	if structType.Kind() != reflect.Struct {
+		return nil
+	}
+
+	var fields []fieldMetadata
+
+	for i := 0; i < structType.NumField(); i++ {
+		structField := structType.Field(i)
+
+		if !structField.IsExported() {
+			continue
+		}
+
+		metadata := fieldMetadata{
+			name:          structField.Name,
+			typ:           structField.Type,
+			fieldIndex:    i,
+			defaultColumn: toSnakeCase(structField.Name),
+		}
+
+		tagValue := structField.Tag.Get("ormapper")
+		if tagValue != "" {
+			if tagValue == "-" {
+				metadata.ignoreTag = true
+			} else {
+				parts := strings.Split(tagValue, ",")
+				for _, part := range parts {
+					part = strings.TrimSpace(part)
+
+					switch {
+					case part == "primary":
+						metadata.primaryTag = true
+					case part == "parental":
+						metadata.parentalTag = true
+					case part == "child":
+						metadata.childTag = true
+					case part == "auto":
+						// auto is shorthand for skip_insert,skip_update
+						metadata.skipInsertTag = true
+						metadata.skipUpdateTag = true
+					case part == "skip_insert":
+						metadata.skipInsertTag = true
+					case part == "skip_update":
+						metadata.skipUpdateTag = true
+					case strings.HasPrefix(part, "column:"):
+						metadata.columnTag = strings.TrimPrefix(part, "column:")
+					}
+				}
+			}
+		}
+
+		fields = append(fields, metadata)
+	}
+
+	return fields
+}
+
 func buildEntityMappings(
 	meta map[reflect.Type]entityMetadata,
 	registered map[reflect.Type]bool,
@@ -136,14 +214,14 @@ func buildSingleMapping(
 	updatable := []string{}
 
 	for _, metadata := range entityMeta.Fields {
-		fieldName := metadata.Name
-		fieldType := metadata.Typ
+		fieldName := metadata.name
+		fieldType := metadata.typ
 
-		if metadata.IgnoreTag {
+		if metadata.ignoreTag {
 			continue
 		}
 
-		isChild := metadata.ChildTag
+		isChild := metadata.childTag
 		var childTarget reflect.Type
 		var childSingular bool
 
@@ -183,10 +261,10 @@ func buildSingleMapping(
 
 		if isChild {
 			child := child{
-				Target:     childTarget,
-				Singular:   childSingular,
-				Type:       fieldType,
-				FieldIndex: metadata.FieldIndex,
+				target:     childTarget,
+				singular:   childSingular,
+				typ:        fieldType,
+				fieldIndex: metadata.fieldIndex,
 			}
 			childMap[fieldName] = &child
 			childFields = append(childFields, fieldName)
@@ -201,22 +279,22 @@ func buildSingleMapping(
 			continue
 		}
 
-		columnName := metadata.ColumnTag
+		columnName := metadata.columnTag
 		if columnName == "" {
-			columnName = metadata.DefaultColumn
+			columnName = metadata.defaultColumn
 		}
 
 		field := field{
-			Name:       metadata.Name,
-			Column:     columnName,
-			Type:       metadata.Typ,
-			FieldIndex: metadata.FieldIndex,
+			name:       metadata.name,
+			column:     columnName,
+			typ:        metadata.typ,
+			fieldIndex: metadata.fieldIndex,
 		}
 
 		fieldMap[fieldName] = &field
 
-		isPrimaryKey := metadata.PrimaryTag
-		isParentalKey := metadata.ParentalTag
+		isPrimaryKey := metadata.primaryTag
+		isParentalKey := metadata.parentalTag
 
 		if !isPrimaryKey && !isParentalKey && fieldName == "ID" {
 			isPrimaryKey = true
@@ -232,14 +310,14 @@ func buildSingleMapping(
 		}
 
 		if isPrimaryKey || isParentalKey {
-			if !metadata.SkipInsertTag {
+			if !metadata.skipInsertTag {
 				insertable = append(insertable, fieldName)
 			}
 		} else {
-			if !metadata.SkipInsertTag {
+			if !metadata.skipInsertTag {
 				insertable = append(insertable, fieldName)
 			}
-			if !metadata.SkipUpdateTag {
+			if !metadata.skipUpdateTag {
 				updatable = append(updatable, fieldName)
 			}
 		}
@@ -258,4 +336,25 @@ func buildSingleMapping(
 		insertable,
 		updatable,
 	)
+}
+
+func toSnakeCase(s string) string {
+	var result strings.Builder
+	for i, r := range s {
+		if i > 0 && r >= 'A' && r <= 'Z' {
+			if i > 0 {
+				prevRune := rune(s[i-1])
+				if prevRune >= 'a' && prevRune <= 'z' {
+					result.WriteRune('_')
+				} else if i+1 < len(s) {
+					nextRune := rune(s[i+1])
+					if nextRune >= 'a' && nextRune <= 'z' {
+						result.WriteRune('_')
+					}
+				}
+			}
+		}
+		result.WriteRune(r)
+	}
+	return strings.ToLower(result.String())
 }

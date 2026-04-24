@@ -121,25 +121,25 @@ func (b *postgreSQLBackend) queryRowContext(ctx context.Context, query string, a
 func (b *postgreSQLBackend) renderSQL(sql sqlNode, args *[]any) {
 	switch v := sql.(type) {
 	case sqlN:
-		b.quoteIdentifier(v.Part)
+		b.quoteIdentifier(v.part)
 	case sqlQN:
-		if v.Part1 == "" {
-			b.quoteIdentifier(v.Part2)
+		if v.part1 == "" {
+			b.quoteIdentifier(v.part2)
 		} else {
-			b.quoteIdentifier(v.Part1)
+			b.quoteIdentifier(v.part1)
 			b.writeByte('.')
-			b.quoteIdentifier(v.Part2)
+			b.quoteIdentifier(v.part2)
 		}
 	case sqlText:
-		b.writeString(v.Text)
+		b.writeString(v.text)
 	case sqlParam:
 		b.paramIndex++
-		*args = append(*args, v.Value)
+		*args = append(*args, v.value)
 		b.writeByte('$')
 		b.writeString(strconv.Itoa(b.paramIndex))
 	case sqlAll:
 		b.writeByte('(')
-		for i, el := range v.Els {
+		for i, el := range v.els {
 			if i > 0 {
 				b.writeString(" AND ")
 			}
@@ -148,7 +148,7 @@ func (b *postgreSQLBackend) renderSQL(sql sqlNode, args *[]any) {
 		b.writeByte(')')
 	case sqlAny:
 		b.writeByte('(')
-		for i, el := range v.Els {
+		for i, el := range v.els {
 			if i > 0 {
 				b.writeString(" OR ")
 			}
@@ -156,25 +156,25 @@ func (b *postgreSQLBackend) renderSQL(sql sqlNode, args *[]any) {
 		}
 		b.writeByte(')')
 	case sqlEq:
-		b.renderSQL(v.Left, args)
+		b.renderSQL(v.left, args)
 		b.writeString(" = ")
-		b.renderSQL(v.Right, args)
+		b.renderSQL(v.right, args)
 	case sqlLt:
-		b.renderSQL(v.Left, args)
+		b.renderSQL(v.left, args)
 		b.writeString(" < ")
-		b.renderSQL(v.Right, args)
+		b.renderSQL(v.right, args)
 	case sqlGt:
-		b.renderSQL(v.Left, args)
+		b.renderSQL(v.left, args)
 		b.writeString(" > ")
-		b.renderSQL(v.Right, args)
+		b.renderSQL(v.right, args)
 	case sqlIsNull:
-		b.renderSQL(v.Operand, args)
+		b.renderSQL(v.operand, args)
 		b.writeString(" IS NULL")
 	case sqlIsNotNull:
-		b.renderSQL(v.Operand, args)
+		b.renderSQL(v.operand, args)
 		b.writeString(" IS NOT NULL")
 	case sqlFragment:
-		for _, el := range v.Els {
+		for _, el := range v.els {
 			b.renderSQL(el, args)
 		}
 	}
@@ -185,9 +185,9 @@ func (b *postgreSQLBackend) renderSQLQuery(stmt sqlQuery) (string, []any) {
 	b.resetArgsBuffer(32)
 	b.resetSQLBuffer(512)
 
-	if len(stmt.Select) > 0 {
+	if len(stmt.selectColumns) > 0 {
 		b.writeString("SELECT ")
-		for i, sel := range stmt.Select {
+		for i, sel := range stmt.selectColumns {
 			if i > 0 {
 				b.writeString(", ")
 			}
@@ -196,29 +196,29 @@ func (b *postgreSQLBackend) renderSQLQuery(stmt sqlQuery) (string, []any) {
 	}
 
 	b.writeString(" FROM ")
-	b.renderSQL(stmt.FromTable, &b.argsBuffer)
+	b.renderSQL(stmt.fromTable, &b.argsBuffer)
 	b.writeString(" AS ")
-	b.renderSQL(stmt.FromAlias, &b.argsBuffer)
+	b.renderSQL(stmt.fromAlias, &b.argsBuffer)
 
-	for _, join := range stmt.Joins {
+	for _, join := range stmt.joins {
 		b.writeByte(' ')
-		b.writeString(join.Type)
+		b.writeString(join.typ)
 		b.writeByte(' ')
-		b.renderSQL(join.Table, &b.argsBuffer)
+		b.renderSQL(join.table, &b.argsBuffer)
 		b.writeString(" AS ")
-		b.renderSQL(join.Alias, &b.argsBuffer)
+		b.renderSQL(join.alias, &b.argsBuffer)
 		b.writeString(" ON ")
-		b.renderSQL(join.On, &b.argsBuffer)
+		b.renderSQL(join.on, &b.argsBuffer)
 	}
 
-	if stmt.Where != nil {
+	if stmt.where != nil {
 		b.writeString(" WHERE ")
-		b.renderSQL(*stmt.Where, &b.argsBuffer)
+		b.renderSQL(*stmt.where, &b.argsBuffer)
 	}
 
-	if len(stmt.GroupBy) > 0 {
+	if len(stmt.groupBy) > 0 {
 		b.writeString(" GROUP BY ")
-		for i, gb := range stmt.GroupBy {
+		for i, gb := range stmt.groupBy {
 			if i > 0 {
 				b.writeString(", ")
 			}
@@ -226,14 +226,14 @@ func (b *postgreSQLBackend) renderSQLQuery(stmt sqlQuery) (string, []any) {
 		}
 	}
 
-	if stmt.Having != nil {
+	if stmt.having != nil {
 		b.writeString(" HAVING ")
-		b.renderSQL(*stmt.Having, &b.argsBuffer)
+		b.renderSQL(*stmt.having, &b.argsBuffer)
 	}
 
-	if len(stmt.OrderBys) > 0 {
+	if len(stmt.orderBys) > 0 {
 		b.writeString(" ORDER BY ")
-		for i, ob := range stmt.OrderBys {
+		for i, ob := range stmt.orderBys {
 			if i > 0 {
 				b.writeString(", ")
 			}
@@ -258,14 +258,14 @@ func (b *postgreSQLBackend) renderSQLQuery(stmt sqlQuery) (string, []any) {
 		}
 	}
 
-	if stmt.Limit != nil {
+	if stmt.limit != nil {
 		b.writeString(" LIMIT ")
-		b.renderSQL(*stmt.Limit, &b.argsBuffer)
+		b.renderSQL(*stmt.limit, &b.argsBuffer)
 	}
 
-	if stmt.Offset != nil {
+	if stmt.offset != nil {
 		b.writeString(" OFFSET ")
-		b.renderSQL(*stmt.Offset, &b.argsBuffer)
+		b.renderSQL(*stmt.offset, &b.argsBuffer)
 	}
 
 	return b.sqlString(), b.argsBuffer
@@ -277,13 +277,13 @@ func (b *postgreSQLBackend) renderSQLQuery(stmt sqlQuery) (string, []any) {
 //	SELECT table.* FROM table JOIN "$k" ON table.col1 = "$k".col1 AND table.col2 = "$k".col2
 func (b *postgreSQLBackend) renderSelect(stmt loadRowsOp, chunk [][]any) (string, []any) {
 	b.paramIndex = 0
-	numKeyColumns := len(stmt.KeyColumns)
+	numKeyColumns := len(stmt.keyColumns)
 	b.resetArgsBuffer(len(chunk) * numKeyColumns)
 
 	b.resetSQLBuffer(512)
 
 	b.writeString("WITH \"$k\" (")
-	for i, col := range stmt.KeyColumns {
+	for i, col := range stmt.keyColumns {
 		if i > 0 {
 			b.writeString(", ")
 		}
@@ -296,7 +296,7 @@ func (b *postgreSQLBackend) renderSelect(stmt loadRowsOp, chunk [][]any) (string
 			b.writeString(", ")
 		}
 		b.writeByte('(')
-		for j := range stmt.KeyColumns {
+		for j := range stmt.keyColumns {
 			if j > 0 {
 				b.writeString(", ")
 			}
@@ -304,9 +304,9 @@ func (b *postgreSQLBackend) renderSelect(stmt loadRowsOp, chunk [][]any) (string
 			if idx == 0 {
 				// First row: use COALESCE to infer type from table schema
 				b.writeString("COALESCE((NULL::")
-				b.quoteTable(stmt.Schema, stmt.Table)
+				b.quoteTable(stmt.schema, stmt.table)
 				b.writeString(").")
-				b.quoteIdentifier(stmt.KeyColumns[j])
+				b.quoteIdentifier(stmt.keyColumns[j])
 				b.writeString(", $")
 				b.writeString(strconv.Itoa(b.paramIndex))
 				b.writeByte(')')
@@ -322,24 +322,24 @@ func (b *postgreSQLBackend) renderSelect(stmt loadRowsOp, chunk [][]any) (string
 	b.writeString(") ")
 
 	b.writeString("SELECT ")
-	for i, col := range stmt.Select {
+	for i, col := range stmt.selectColumns {
 		if i > 0 {
 			b.writeString(", ")
 		}
-		b.quoteIdentifier(stmt.Table)
+		b.quoteIdentifier(stmt.table)
 		b.writeByte('.')
 		b.quoteIdentifier(col)
 	}
 
 	b.writeString(" FROM ")
-	b.quoteTable(stmt.Schema, stmt.Table)
+	b.quoteTable(stmt.schema, stmt.table)
 
 	b.writeString(" JOIN \"$k\" ON ")
-	for j, col := range stmt.KeyColumns {
+	for j, col := range stmt.keyColumns {
 		if j > 0 {
 			b.writeString(" AND ")
 		}
-		b.quoteIdentifier(stmt.Table)
+		b.quoteIdentifier(stmt.table)
 		b.writeByte('.')
 		b.quoteIdentifier(col)
 		b.writeString(" = \"$k\".")
@@ -351,12 +351,12 @@ func (b *postgreSQLBackend) renderSelect(stmt loadRowsOp, chunk [][]any) (string
 
 func (b *postgreSQLBackend) renderSelectExistingKeys(stmt keyScanOp, chunk [][]any) (string, []any) {
 	b.paramIndex = 0
-	numKeyColumns := len(stmt.KeyColumns)
+	numKeyColumns := len(stmt.keyColumns)
 	b.resetArgsBuffer(len(chunk) * numKeyColumns)
 	b.resetSQLBuffer(512)
 
 	b.writeString("WITH \"$k\" (")
-	for i, col := range stmt.KeyColumns {
+	for i, col := range stmt.keyColumns {
 		if i > 0 {
 			b.writeString(", ")
 		}
@@ -369,16 +369,16 @@ func (b *postgreSQLBackend) renderSelectExistingKeys(stmt keyScanOp, chunk [][]a
 			b.writeString(", ")
 		}
 		b.writeByte('(')
-		for j := range stmt.KeyColumns {
+		for j := range stmt.keyColumns {
 			if j > 0 {
 				b.writeString(", ")
 			}
 			b.paramIndex++
 			if idx == 0 {
 				b.writeString("COALESCE((NULL::")
-				b.quoteTable(stmt.Schema, stmt.Table)
+				b.quoteTable(stmt.schema, stmt.table)
 				b.writeString(").")
-				b.quoteIdentifier(stmt.KeyColumns[j])
+				b.quoteIdentifier(stmt.keyColumns[j])
 				b.writeString(", $")
 				b.writeString(strconv.Itoa(b.paramIndex))
 				b.writeByte(')')
@@ -393,7 +393,7 @@ func (b *postgreSQLBackend) renderSelectExistingKeys(stmt keyScanOp, chunk [][]a
 	b.writeString(") ")
 
 	b.writeString("SELECT ")
-	for i, col := range stmt.KeyColumns {
+	for i, col := range stmt.keyColumns {
 		if i > 0 {
 			b.writeString(", ")
 		}
@@ -402,13 +402,13 @@ func (b *postgreSQLBackend) renderSelectExistingKeys(stmt keyScanOp, chunk [][]a
 	}
 
 	b.writeString(" FROM \"$k\" JOIN ")
-	b.quoteTable(stmt.Schema, stmt.Table)
+	b.quoteTable(stmt.schema, stmt.table)
 	b.writeString(" ON ")
-	for i, col := range stmt.KeyColumns {
+	for i, col := range stmt.keyColumns {
 		if i > 0 {
 			b.writeString(" AND ")
 		}
-		b.quoteIdentifier(stmt.Table)
+		b.quoteIdentifier(stmt.table)
 		b.writeByte('.')
 		b.quoteIdentifier(col)
 		b.writeString(" = \"$k\".")
@@ -445,7 +445,7 @@ func (b *postgreSQLBackend) renderGeneratedInsertRows(stmt saveRowsOp, indexes [
 			b.paramIndex++
 			if idx == 0 {
 				b.writeString("COALESCE((NULL::")
-				b.quoteTable(stmt.Schema, stmt.Table)
+				b.quoteTable(stmt.schema, stmt.table)
 				b.writeString(").")
 				b.quoteIdentifier(insertColumns[j])
 				b.writeString(", $")
@@ -471,8 +471,8 @@ func (b *postgreSQLBackend) renderGeneratedInsertRows(stmt saveRowsOp, indexes [
 		b.paramIndex++
 		b.writeString(strconv.Itoa(b.paramIndex))
 		b.writeString(")::regclass) AS ")
-		b.quoteIdentifier(field.Column)
-		b.argsBuffer = append(b.argsBuffer, pgSerialSequenceTableName(stmt.Schema, stmt.Table), field.Column)
+		b.quoteIdentifier(field.column)
+		b.argsBuffer = append(b.argsBuffer, pgSerialSequenceTableName(stmt.schema, stmt.table), field.column)
 	}
 	for _, col := range insertColumns {
 		b.writeString(", ")
@@ -481,7 +481,7 @@ func (b *postgreSQLBackend) renderGeneratedInsertRows(stmt saveRowsOp, indexes [
 	b.writeString(" FROM \"$r\")")
 
 	b.writeString(", \"$ins\" AS (INSERT INTO ")
-	b.quoteTable(stmt.Schema, stmt.Table)
+	b.quoteTable(stmt.schema, stmt.table)
 	b.writeString(" (")
 	insertWithGenerated := stmt.insertColumnsWithGeneratedPrimary()
 	for i, col := range insertWithGenerated {
@@ -500,11 +500,11 @@ func (b *postgreSQLBackend) renderGeneratedInsertRows(stmt saveRowsOp, indexes [
 	b.writeString(" FROM \"$a\" ORDER BY ")
 	b.quoteIdentifier("$i")
 	b.writeString(" RETURNING ")
-	for i, col := range stmt.Returning {
+	for i, col := range stmt.returning {
 		if i > 0 {
 			b.writeString(", ")
 		}
-		b.quoteIdentifier(stmt.Table)
+		b.quoteIdentifier(stmt.table)
 		b.writeByte('.')
 		b.quoteIdentifier(col)
 	}
@@ -512,7 +512,7 @@ func (b *postgreSQLBackend) renderGeneratedInsertRows(stmt saveRowsOp, indexes [
 
 	b.writeString(" SELECT \"$a\".")
 	b.quoteIdentifier("$i")
-	for _, col := range stmt.Returning {
+	for _, col := range stmt.returning {
 		b.writeString(", \"$ins\".")
 		b.quoteIdentifier(col)
 	}
@@ -522,9 +522,9 @@ func (b *postgreSQLBackend) renderGeneratedInsertRows(stmt saveRowsOp, indexes [
 			b.writeString(" AND ")
 		}
 		b.writeString("\"$ins\".")
-		b.quoteIdentifier(field.Column)
+		b.quoteIdentifier(field.column)
 		b.writeString(" = \"$a\".")
-		b.quoteIdentifier(field.Column)
+		b.quoteIdentifier(field.column)
 	}
 	b.writeString(" ORDER BY \"$a\".")
 	b.quoteIdentifier("$i")
@@ -560,7 +560,7 @@ func (b *postgreSQLBackend) renderInsertRows(stmt saveRowsOp, rows []saveRow) (s
 			b.paramIndex++
 			if idx == 0 {
 				b.writeString("COALESCE((NULL::")
-				b.quoteTable(stmt.Schema, stmt.Table)
+				b.quoteTable(stmt.schema, stmt.table)
 				b.writeString(").")
 				b.quoteIdentifier(insertColumns[j])
 				b.writeString(", $")
@@ -577,7 +577,7 @@ func (b *postgreSQLBackend) renderInsertRows(stmt saveRowsOp, rows []saveRow) (s
 	b.writeString(") ")
 
 	b.writeString("INSERT INTO ")
-	b.quoteTable(stmt.Schema, stmt.Table)
+	b.quoteTable(stmt.schema, stmt.table)
 	b.writeString(" (")
 	for i, col := range insertColumns {
 		if i > 0 {
@@ -594,13 +594,13 @@ func (b *postgreSQLBackend) renderInsertRows(stmt saveRowsOp, rows []saveRow) (s
 	}
 	b.writeString(" FROM \"$r\"")
 
-	if len(stmt.Returning) > 0 {
+	if len(stmt.returning) > 0 {
 		b.writeString(" RETURNING ")
-		for i, col := range stmt.Returning {
+		for i, col := range stmt.returning {
 			if i > 0 {
 				b.writeString(", ")
 			}
-			b.quoteIdentifier(stmt.Table)
+			b.quoteIdentifier(stmt.table)
 			b.writeByte('.')
 			b.quoteIdentifier(col)
 		}
@@ -641,7 +641,7 @@ func (b *postgreSQLBackend) renderUpdateRows(stmt saveRowsOp, rows []saveRow) (s
 			b.paramIndex++
 			if idx == 0 {
 				b.writeString("COALESCE((NULL::")
-				b.quoteTable(stmt.Schema, stmt.Table)
+				b.quoteTable(stmt.schema, stmt.table)
 				b.writeString(").")
 				b.quoteIdentifier(rowColumns[j])
 				b.writeString(", $")
@@ -651,12 +651,12 @@ func (b *postgreSQLBackend) renderUpdateRows(stmt saveRowsOp, rows []saveRow) (s
 				b.writeByte('$')
 				b.writeString(strconv.Itoa(b.paramIndex))
 			}
-			b.argsBuffer = append(b.argsBuffer, row.Values[j])
+			b.argsBuffer = append(b.argsBuffer, row.values[j])
 		}
 		b.writeByte(')')
 	}
 	b.writeString(") UPDATE ")
-	b.quoteTable(stmt.Schema, stmt.Table)
+	b.quoteTable(stmt.schema, stmt.table)
 	b.writeString(" SET ")
 	for i, col := range updateColumns {
 		if i > 0 {
@@ -671,20 +671,20 @@ func (b *postgreSQLBackend) renderUpdateRows(stmt saveRowsOp, rows []saveRow) (s
 		if i > 0 {
 			b.writeString(" AND ")
 		}
-		b.quoteIdentifier(stmt.Table)
+		b.quoteIdentifier(stmt.table)
 		b.writeByte('.')
 		b.quoteIdentifier(col)
 		b.writeString(" = \"$r\".")
 		b.quoteIdentifier(col)
 	}
 
-	if len(stmt.Returning) > 0 {
+	if len(stmt.returning) > 0 {
 		b.writeString(" RETURNING ")
-		for i, col := range stmt.Returning {
+		for i, col := range stmt.returning {
 			if i > 0 {
 				b.writeString(", ")
 			}
-			b.quoteIdentifier(stmt.Table)
+			b.quoteIdentifier(stmt.table)
 			b.writeByte('.')
 			b.quoteIdentifier(col)
 		}
@@ -699,13 +699,13 @@ func (b *postgreSQLBackend) renderUpdateRows(stmt saveRowsOp, rows []saveRow) (s
 //	DELETE FROM table WHERE id IN (SELECT id FROM keys)
 func (b *postgreSQLBackend) renderDelete(stmt deleteRowsOp, chunk [][]any) (string, []any) {
 	b.paramIndex = 0
-	numKeyColumns := len(stmt.KeyColumns)
+	numKeyColumns := len(stmt.keyColumns)
 	b.resetArgsBuffer(len(chunk) * numKeyColumns)
 
 	b.resetSQLBuffer(512)
 
 	b.writeString("WITH \"$k\" (")
-	for i, col := range stmt.KeyColumns {
+	for i, col := range stmt.keyColumns {
 		if i > 0 {
 			b.writeString(", ")
 		}
@@ -718,7 +718,7 @@ func (b *postgreSQLBackend) renderDelete(stmt deleteRowsOp, chunk [][]any) (stri
 			b.writeString(", ")
 		}
 		b.writeByte('(')
-		for j := range stmt.KeyColumns {
+		for j := range stmt.keyColumns {
 			if j > 0 {
 				b.writeString(", ")
 			}
@@ -726,9 +726,9 @@ func (b *postgreSQLBackend) renderDelete(stmt deleteRowsOp, chunk [][]any) (stri
 			if idx == 0 {
 				// First row: use COALESCE to infer type from table schema
 				b.writeString("COALESCE((NULL::")
-				b.quoteTable(stmt.Schema, stmt.Table)
+				b.quoteTable(stmt.schema, stmt.table)
 				b.writeString(").")
-				b.quoteIdentifier(stmt.KeyColumns[j])
+				b.quoteIdentifier(stmt.keyColumns[j])
 				b.writeString(", $")
 				b.writeString(strconv.Itoa(b.paramIndex))
 				b.writeByte(')')
@@ -744,24 +744,24 @@ func (b *postgreSQLBackend) renderDelete(stmt deleteRowsOp, chunk [][]any) (stri
 	b.writeString(") ")
 
 	b.writeString("DELETE FROM ")
-	b.quoteTable(stmt.Schema, stmt.Table)
+	b.quoteTable(stmt.schema, stmt.table)
 	b.writeString(" WHERE ")
 
 	if numKeyColumns == 1 {
-		b.quoteIdentifier(stmt.KeyColumns[0])
+		b.quoteIdentifier(stmt.keyColumns[0])
 		b.writeString(" IN (SELECT ")
-		b.quoteIdentifier(stmt.KeyColumns[0])
+		b.quoteIdentifier(stmt.keyColumns[0])
 		b.writeString(" FROM \"$k\")")
 	} else {
 		b.writeByte('(')
-		for i, col := range stmt.KeyColumns {
+		for i, col := range stmt.keyColumns {
 			if i > 0 {
 				b.writeString(", ")
 			}
 			b.quoteIdentifier(col)
 		}
 		b.writeString(") IN (SELECT ")
-		for i, col := range stmt.KeyColumns {
+		for i, col := range stmt.keyColumns {
 			if i > 0 {
 				b.writeString(", ")
 			}
@@ -775,11 +775,11 @@ func (b *postgreSQLBackend) renderDelete(stmt deleteRowsOp, chunk [][]any) (stri
 
 func (b *postgreSQLBackend) renderSelectMissingChildren(stmt selectMissingChildrenOp, parentRows, keepRows [][]any) (string, []any) {
 	b.paramIndex = 0
-	b.resetArgsBuffer(len(parentRows)*len(stmt.ParentKeyColumns) + len(keepRows)*(len(stmt.ParentKeyColumns)+len(stmt.ChildKeyColumns)))
+	b.resetArgsBuffer(len(parentRows)*len(stmt.parentKeyColumns) + len(keepRows)*(len(stmt.parentKeyColumns)+len(stmt.childKeyColumns)))
 	b.resetSQLBuffer(512)
 
 	b.writeString("WITH \"$p\" (")
-	for i := range stmt.ParentKeyColumns {
+	for i := range stmt.parentKeyColumns {
 		if i > 0 {
 			b.writeString(", ")
 		}
@@ -791,16 +791,16 @@ func (b *postgreSQLBackend) renderSelectMissingChildren(stmt selectMissingChildr
 			b.writeString(", ")
 		}
 		b.writeByte('(')
-		for j := range stmt.ParentKeyColumns {
+		for j := range stmt.parentKeyColumns {
 			if j > 0 {
 				b.writeString(", ")
 			}
 			b.paramIndex++
 			if idx == 0 {
 				b.writeString("COALESCE((NULL::")
-				b.quoteTable(stmt.Schema, stmt.Table)
+				b.quoteTable(stmt.schema, stmt.table)
 				b.writeString(").")
-				b.quoteIdentifier(stmt.ParentKeyColumns[j])
+				b.quoteIdentifier(stmt.parentKeyColumns[j])
 				b.writeString(", $")
 				b.writeString(strconv.Itoa(b.paramIndex))
 				b.writeByte(')')
@@ -816,11 +816,11 @@ func (b *postgreSQLBackend) renderSelectMissingChildren(stmt selectMissingChildr
 
 	if len(keepRows) > 0 {
 		b.writeString(", \"$k\" (")
-		keepColumns := make([]string, 0, len(stmt.ParentKeyColumns)+len(stmt.ChildKeyColumns))
-		for i := range stmt.ParentKeyColumns {
+		keepColumns := make([]string, 0, len(stmt.parentKeyColumns)+len(stmt.childKeyColumns))
+		for i := range stmt.parentKeyColumns {
 			keepColumns = append(keepColumns, "p"+strconv.Itoa(i))
 		}
-		for i := range stmt.ChildKeyColumns {
+		for i := range stmt.childKeyColumns {
 			keepColumns = append(keepColumns, "c"+strconv.Itoa(i))
 		}
 		for i, alias := range keepColumns {
@@ -842,13 +842,13 @@ func (b *postgreSQLBackend) renderSelectMissingChildren(stmt selectMissingChildr
 				b.paramIndex++
 				if idx == 0 {
 					col := ""
-					if j < len(stmt.ParentKeyColumns) {
-						col = stmt.ParentKeyColumns[j]
+					if j < len(stmt.parentKeyColumns) {
+						col = stmt.parentKeyColumns[j]
 					} else {
-						col = stmt.ChildKeyColumns[j-len(stmt.ParentKeyColumns)]
+						col = stmt.childKeyColumns[j-len(stmt.parentKeyColumns)]
 					}
 					b.writeString("COALESCE((NULL::")
-					b.quoteTable(stmt.Schema, stmt.Table)
+					b.quoteTable(stmt.schema, stmt.table)
 					b.writeString(").")
 					b.quoteIdentifier(col)
 					b.writeString(", $")
@@ -866,23 +866,23 @@ func (b *postgreSQLBackend) renderSelectMissingChildren(stmt selectMissingChildr
 	}
 
 	b.writeString(" SELECT ")
-	for i, col := range stmt.ChildKeyColumns {
+	for i, col := range stmt.childKeyColumns {
 		if i > 0 {
 			b.writeString(", ")
 		}
-		b.quoteIdentifier(stmt.Table)
+		b.quoteIdentifier(stmt.table)
 		b.writeByte('.')
 		b.quoteIdentifier(col)
 	}
 
 	b.writeString(" FROM ")
-	b.quoteTable(stmt.Schema, stmt.Table)
+	b.quoteTable(stmt.schema, stmt.table)
 	b.writeString(" JOIN \"$p\" ON ")
-	for i, col := range stmt.ParentKeyColumns {
+	for i, col := range stmt.parentKeyColumns {
 		if i > 0 {
 			b.writeString(" AND ")
 		}
-		b.quoteIdentifier(stmt.Table)
+		b.quoteIdentifier(stmt.table)
 		b.writeByte('.')
 		b.quoteIdentifier(col)
 		b.writeString(" = \"$p\".")
@@ -891,21 +891,21 @@ func (b *postgreSQLBackend) renderSelectMissingChildren(stmt selectMissingChildr
 
 	if len(keepRows) > 0 {
 		b.writeString(" LEFT JOIN \"$k\" ON ")
-		for i, col := range stmt.ParentKeyColumns {
+		for i, col := range stmt.parentKeyColumns {
 			if i > 0 {
 				b.writeString(" AND ")
 			}
-			b.quoteIdentifier(stmt.Table)
+			b.quoteIdentifier(stmt.table)
 			b.writeByte('.')
 			b.quoteIdentifier(col)
 			b.writeString(" = \"$k\".")
 			b.quoteIdentifier("p" + strconv.Itoa(i))
 		}
-		for i, col := range stmt.ChildKeyColumns {
-			if len(stmt.ParentKeyColumns)+i > 0 {
+		for i, col := range stmt.childKeyColumns {
+			if len(stmt.parentKeyColumns)+i > 0 {
 				b.writeString(" AND ")
 			}
-			b.quoteIdentifier(stmt.Table)
+			b.quoteIdentifier(stmt.table)
 			b.writeByte('.')
 			b.quoteIdentifier(col)
 			b.writeString(" = \"$k\".")
@@ -920,11 +920,11 @@ func (b *postgreSQLBackend) renderSelectMissingChildren(stmt selectMissingChildr
 }
 
 func (b *postgreSQLBackend) LoadByKeys(ctx context.Context, op loadRowsOp) (rows, error) {
-	if len(op.Keys) == 0 {
+	if len(op.keys) == 0 {
 		return &emptyRows{}, nil
 	}
 
-	query, args := b.renderSelect(op, rowsFromKeys(op.Keys))
+	query, args := b.renderSelect(op, rowsFromKeys(op.keys))
 	return b.queryContext(ctx, query, args...)
 }
 
@@ -933,17 +933,17 @@ func (b *postgreSQLBackend) LoadByParentKeys(ctx context.Context, op loadRowsOp)
 }
 
 func (b *postgreSQLBackend) SelectExistingKeys(ctx context.Context, op keyScanOp) ([]Key, error) {
-	if len(op.Keys) == 0 {
+	if len(op.keys) == 0 {
 		return nil, nil
 	}
 
-	query, args := b.renderSelectExistingKeys(op, rowsFromKeys(op.Keys))
+	query, args := b.renderSelectExistingKeys(op, rowsFromKeys(op.keys))
 	rowSet, err := b.queryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = rowSet.Close() }()
-	return scanTypedKeys(rowSet, op.KeyTypes)
+	return scanTypedKeys(rowSet, op.keyTypes)
 }
 
 func (b *postgreSQLBackend) InsertRows(ctx context.Context, op saveRowsOp, rows []plannedRow) ([]savedRow, error) {
@@ -988,7 +988,7 @@ func (b *postgreSQLBackend) insertGeneratedRows(ctx context.Context, op saveRows
 	}
 	defer func() { _ = rowSet.Close() }()
 
-	saved, err := scanIndexedSavedRows(rowSet, len(op.Returning))
+	saved, err := scanIndexedSavedRows(rowSet, len(op.returning))
 	if err != nil {
 		return nil, err
 	}
@@ -1022,12 +1022,12 @@ func (b *postgreSQLBackend) UpdateRows(ctx context.Context, op saveRowsOp, rows 
 }
 
 func (b *postgreSQLBackend) SelectMissingChildren(ctx context.Context, op selectMissingChildrenOp) ([]Key, error) {
-	if len(op.ParentKeys) == 0 {
+	if len(op.parentKeys) == 0 {
 		return nil, nil
 	}
 
-	parentRows := rowsFromKeys(op.ParentKeys)
-	keepRows := keepRowsFromPairs(op.KeepPairs)
+	parentRows := rowsFromKeys(op.parentKeys)
+	keepRows := keepRowsFromPairs(op.keepPairs)
 
 	query, args := b.renderSelectMissingChildren(op, parentRows, keepRows)
 	rowSet, err := b.queryContext(ctx, query, args...)
@@ -1035,7 +1035,7 @@ func (b *postgreSQLBackend) SelectMissingChildren(ctx context.Context, op select
 		return nil, err
 	}
 	defer func() { _ = rowSet.Close() }()
-	return scanKeys(rowSet, len(op.ChildKeyColumns))
+	return scanKeys(rowSet, len(op.childKeyColumns))
 }
 
 func (b *postgreSQLBackend) DeleteRowsByKeys(ctx context.Context, op deleteRowsOp) error {
@@ -1043,11 +1043,11 @@ func (b *postgreSQLBackend) DeleteRowsByKeys(ctx context.Context, op deleteRowsO
 }
 
 func (b *postgreSQLBackend) deleteRows(ctx context.Context, op deleteRowsOp) error {
-	if len(op.Keys) == 0 {
+	if len(op.keys) == 0 {
 		return nil
 	}
 
-	query, args := b.renderDelete(op, rowsFromKeys(op.Keys))
+	query, args := b.renderDelete(op, rowsFromKeys(op.keys))
 
 	_, err := b.execContext(ctx, query, args...)
 	return err
@@ -1060,8 +1060,8 @@ func (b *postgreSQLBackend) FetchQuery(ctx context.Context, stmt sqlQuery) (rows
 
 func (b *postgreSQLBackend) CountQuery(ctx context.Context, stmt sqlQuery) (int64, error) {
 	innerStmt := stmt
-	innerStmt.Limit = nil
-	innerStmt.Offset = nil
+	innerStmt.limit = nil
+	innerStmt.offset = nil
 
 	innerQuery, args := b.renderSQLQuery(innerStmt)
 	countQuery := fmt.Sprintf("SELECT COUNT(*) FROM (%s) AS count_subquery", innerQuery)

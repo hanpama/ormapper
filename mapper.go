@@ -85,7 +85,7 @@ func (m *Mapper) Delete(ctx context.Context, db DBTX, entity any) error {
 	}
 
 	u := newPersistence(m.mappings, m.dialect.newBackend(db))
-	key := mapping.ExtractKey(entity, mapping.PrimaryKey)
+	key := mapping.extractKey(entity, mapping.primaryKey)
 	return u.deleteByKeys(ctx, mapping, []Key{key})
 }
 

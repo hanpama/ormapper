@@ -6,40 +6,50 @@ import (
 )
 
 type loadRowsOp struct {
-	Schema     string
-	Table      string
-	Select     []string
-	KeyColumns []string
-	Keys       []Key
+	schema        string
+	table         string
+	selectColumns []string
+	keyColumns    []string
+	keys          []Key
 }
 
 type keyScanOp struct {
-	Schema     string
-	Table      string
-	KeyColumns []string
-	KeyTypes   []reflect.Type
-	Keys       []Key
+	schema     string
+	table      string
+	keyColumns []string
+	keyTypes   []reflect.Type
+	keys       []Key
 }
 
 type saveRowsOp struct {
-	Schema    string
-	Table     string
-	Fields    []saveField
-	Returning []string
+	schema    string
+	table     string
+	fields    []saveField
+	returning []string
 }
 
 type saveRow struct {
-	Values []any
+	values []any
 }
 
 type plannedRow struct {
-	Index int
-	Row   saveRow
+	index int
+	row   saveRow
 }
 
 type savedRow struct {
-	Index  int
-	Values []any
+	index  int
+	values []any
+}
+
+type saveField struct {
+	name       string
+	column     string
+	typ        reflect.Type
+	primaryKey bool
+	generated  bool
+	insertable bool
+	updatable  bool
 }
 
 type saveRowIntent int
@@ -51,78 +61,78 @@ const (
 )
 
 type keepPair struct {
-	ParentKey Key
-	ChildKey  Key
+	parentKey Key
+	childKey  Key
 }
 
 type selectMissingChildrenOp struct {
-	Schema           string
-	Table            string
-	ParentKeyColumns []string
-	ChildKeyColumns  []string
-	ParentKeys       []Key
-	KeepPairs        []keepPair
+	schema           string
+	table            string
+	parentKeyColumns []string
+	childKeyColumns  []string
+	parentKeys       []Key
+	keepPairs        []keepPair
 }
 
 type deleteRowsOp struct {
-	Schema     string
-	Table      string
-	KeyColumns []string
-	Keys       []Key
+	schema     string
+	table      string
+	keyColumns []string
+	keys       []Key
 }
 
 func (op saveRowsOp) insertColumns() []string {
-	columns := make([]string, 0, len(op.Fields))
-	for _, field := range op.Fields {
-		if field.Insertable {
-			columns = append(columns, field.Column)
+	columns := make([]string, 0, len(op.fields))
+	for _, field := range op.fields {
+		if field.insertable {
+			columns = append(columns, field.column)
 		}
 	}
 	return columns
 }
 
 func (op saveRowsOp) insertColumnsWithGeneratedPrimary() []string {
-	columns := make([]string, 0, len(op.Fields))
-	for _, field := range op.Fields {
-		if field.PrimaryKey && field.Generated {
-			columns = append(columns, field.Column)
+	columns := make([]string, 0, len(op.fields))
+	for _, field := range op.fields {
+		if field.primaryKey && field.generated {
+			columns = append(columns, field.column)
 		}
 	}
-	for _, field := range op.Fields {
-		if field.Insertable {
-			columns = append(columns, field.Column)
+	for _, field := range op.fields {
+		if field.insertable {
+			columns = append(columns, field.column)
 		}
 	}
 	return columns
 }
 
 func (op saveRowsOp) rowColumns() []string {
-	columns := make([]string, 0, len(op.Fields))
-	for _, field := range op.Fields {
-		columns = append(columns, field.Column)
+	columns := make([]string, 0, len(op.fields))
+	for _, field := range op.fields {
+		columns = append(columns, field.column)
 	}
 	return columns
 }
 
 func (op saveRowsOp) insertValuesForRow(row saveRow) []any {
-	indexes := make([]int, 0, len(op.Fields))
-	for i, field := range op.Fields {
-		if field.Insertable {
+	indexes := make([]int, 0, len(op.fields))
+	for i, field := range op.fields {
+		if field.insertable {
 			indexes = append(indexes, i)
 		}
 	}
 
 	projected := make([]any, len(indexes))
 	for j, idx := range indexes {
-		projected[j] = row.Values[idx]
+		projected[j] = row.values[idx]
 	}
 	return projected
 }
 
 func (op saveRowsOp) primaryKeyIndexes() []int {
-	indexes := make([]int, 0, len(op.Fields))
-	for i, field := range op.Fields {
-		if field.PrimaryKey {
+	indexes := make([]int, 0, len(op.fields))
+	for i, field := range op.fields {
+		if field.primaryKey {
 			indexes = append(indexes, i)
 		}
 	}
@@ -132,7 +142,7 @@ func (op saveRowsOp) primaryKeyIndexes() []int {
 func (op saveRowsOp) returningIndexes(columns []string) []int {
 	indexes := make([]int, 0, len(columns))
 	for _, column := range columns {
-		for i, returning := range op.Returning {
+		for i, returning := range op.returning {
 			if returning == column {
 				indexes = append(indexes, i)
 				break
@@ -144,8 +154,8 @@ func (op saveRowsOp) returningIndexes(columns []string) []int {
 
 func (op saveRowsOp) primaryFields() []saveField {
 	fields := make([]saveField, 0)
-	for _, field := range op.Fields {
-		if field.PrimaryKey {
+	for _, field := range op.fields {
+		if field.primaryKey {
 			fields = append(fields, field)
 		}
 	}
@@ -154,8 +164,8 @@ func (op saveRowsOp) primaryFields() []saveField {
 
 func (op saveRowsOp) generatedPrimaryFields() []saveField {
 	fields := make([]saveField, 0)
-	for _, field := range op.Fields {
-		if field.PrimaryKey && field.Generated {
+	for _, field := range op.fields {
+		if field.primaryKey && field.generated {
 			fields = append(fields, field)
 		}
 	}
@@ -164,8 +174,8 @@ func (op saveRowsOp) generatedPrimaryFields() []saveField {
 
 func (op saveRowsOp) generatedPrimaryIndexes() []int {
 	indexes := make([]int, 0)
-	for i, field := range op.Fields {
-		if field.PrimaryKey && field.Generated {
+	for i, field := range op.fields {
+		if field.primaryKey && field.generated {
 			indexes = append(indexes, i)
 		}
 	}
@@ -176,12 +186,12 @@ func (op saveRowsOp) keyFromReturnedValues(values []any) Key {
 	fields := op.primaryFields()
 	columns := make([]string, len(fields))
 	for i, field := range fields {
-		columns[i] = field.Column
+		columns[i] = field.column
 	}
 	indexes := op.returningIndexes(columns)
 	keyValues := make([]any, len(indexes))
 	for i, idx := range indexes {
-		keyValues[i] = coerceValue(values[idx], fields[i].Type)
+		keyValues[i] = coerceValue(values[idx], fields[i].typ)
 	}
 	return NewKey(keyValues...)
 }
@@ -194,7 +204,7 @@ func (op saveRowsOp) classifyRow(row saveRow) (saveRowIntent, error) {
 
 	zeroCount := 0
 	for _, idx := range generatedIndexes {
-		if valueIsZero(row.Values[idx]) {
+		if valueIsZero(row.values[idx]) {
 			zeroCount++
 		}
 	}
@@ -212,7 +222,7 @@ func (op saveRowsOp) keyFromRow(row saveRow) Key {
 	indexes := op.primaryKeyIndexes()
 	values := make([]any, len(indexes))
 	for i, idx := range indexes {
-		values[i] = row.Values[idx]
+		values[i] = row.values[idx]
 	}
 	return NewKey(values...)
 }
@@ -240,20 +250,20 @@ func coerceValue(value any, target reflect.Type) any {
 }
 
 func (op saveRowsOp) conflictColumns() []string {
-	columns := make([]string, 0, len(op.Fields))
-	for _, field := range op.Fields {
-		if field.PrimaryKey {
-			columns = append(columns, field.Column)
+	columns := make([]string, 0, len(op.fields))
+	for _, field := range op.fields {
+		if field.primaryKey {
+			columns = append(columns, field.column)
 		}
 	}
 	return columns
 }
 
 func (op saveRowsOp) updateColumns() []string {
-	columns := make([]string, 0, len(op.Fields))
-	for _, field := range op.Fields {
-		if field.Updatable {
-			columns = append(columns, field.Column)
+	columns := make([]string, 0, len(op.fields))
+	for _, field := range op.fields {
+		if field.updatable {
+			columns = append(columns, field.column)
 		}
 	}
 	return columns

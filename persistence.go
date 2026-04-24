@@ -38,8 +38,8 @@ func (u *persistence) scanEntity(em *entityMapping, entityPtr any, row rows, fie
 	}
 
 	for _, name := range fieldNames {
-		field := em.FieldMap[name]
-		u.scanBuffer = append(u.scanBuffer, field.GetPtr(entityPtr))
+		field := em.fieldMap[name]
+		u.scanBuffer = append(u.scanBuffer, field.getPtr(entityPtr))
 	}
 
 	return row.Scan(u.scanBuffer...)
@@ -51,17 +51,17 @@ func (u *persistence) getByKeys(ctx context.Context, em *entityMapping, ids []Ke
 	}
 
 	for _, id := range ids {
-		if id.Length() != len(em.PrimaryKey) {
-			return nil, fmt.Errorf("key has %d values but %d key columns expected (entity %s, key columns: %v)", id.Length(), len(em.PrimaryKey), em.EntityType, em.PrimaryKey)
+		if id.Length() != len(em.primaryKey) {
+			return nil, fmt.Errorf("key has %d values but %d key columns expected (entity %s, key columns: %v)", id.Length(), len(em.primaryKey), em.entityType, em.primaryKey)
 		}
 	}
 
 	rowSet, err := u.backend.LoadByKeys(ctx, loadRowsOp{
-		Schema:     em.Schema,
-		Table:      em.Table,
-		Select:     em.Columns(),
-		KeyColumns: em.PrimaryColumns(),
-		Keys:       ids,
+		schema:        em.schema,
+		table:         em.table,
+		selectColumns: em.allColumns,
+		keyColumns:    em.primaryColumns,
+		keys:          ids,
 	})
 	if err != nil {
 		return nil, err
@@ -77,17 +77,17 @@ func (u *persistence) getByParentKeys(ctx context.Context, em *entityMapping, pa
 	}
 
 	for _, key := range parentKeys {
-		if key.Length() != len(em.ParentalKey) {
-			return nil, fmt.Errorf("key has %d values but %d parental key columns expected (entity %s, key columns: %v)", key.Length(), len(em.ParentalKey), em.EntityType, em.ParentalKey)
+		if key.Length() != len(em.parentalKey) {
+			return nil, fmt.Errorf("key has %d values but %d parental key columns expected (entity %s, key columns: %v)", key.Length(), len(em.parentalKey), em.entityType, em.parentalKey)
 		}
 	}
 
 	rowSet, err := u.backend.LoadByParentKeys(ctx, loadRowsOp{
-		Schema:     em.Schema,
-		Table:      em.Table,
-		Select:     em.Columns(),
-		KeyColumns: em.ParentalColumns(),
-		Keys:       parentKeys,
+		schema:        em.schema,
+		table:         em.table,
+		selectColumns: em.allColumns,
+		keyColumns:    em.parentalColumns,
+		keys:          parentKeys,
 	})
 	if err != nil {
 		return nil, err
@@ -100,14 +100,14 @@ func (u *persistence) getByParentKeys(ctx context.Context, em *entityMapping, pa
 func (u *persistence) scanEntities(ctx context.Context, em *entityMapping, rowSet rows) ([]any, error) {
 	entities := make([]any, 0)
 	for rowSet.Next() {
-		entityPtr := reflect.New(em.EntityType).Interface()
-		if err := u.scanEntity(em, entityPtr, rowSet, em.AllFields); err != nil {
+		entityPtr := reflect.New(em.entityType).Interface()
+		if err := u.scanEntity(em, entityPtr, rowSet, em.allFields); err != nil {
 			return nil, err
 		}
 		entities = append(entities, entityPtr)
 	}
 
-	if len(entities) > 0 && len(em.ChildMap) > 0 {
+	if len(entities) > 0 && len(em.childMap) > 0 {
 		if err := u.loadChildren(ctx, em, entities); err != nil {
 			return nil, err
 		}
@@ -120,13 +120,13 @@ func (u *persistence) loadChildren(ctx context.Context, em *entityMapping, paren
 	parentKeys := make([]Key, len(parents))
 	parentKeyToParent := make(map[Key]any, len(parents))
 	for i, parent := range parents {
-		parentKeys[i] = em.ExtractKey(parent, em.PrimaryKey)
+		parentKeys[i] = em.extractKey(parent, em.primaryKey)
 		parentKeyToParent[parentKeys[i]] = parent
 	}
 
-	for _, childField := range em.ChildFields {
-		child := em.ChildMap[childField]
-		childMapping, err := u.registry.get(child.Target)
+	for _, childField := range em.childFields {
+		child := em.childMap[childField]
+		childMapping, err := u.registry.get(child.target)
 		if err != nil {
 			return err
 		}
@@ -146,7 +146,7 @@ func (u *persistence) loadChildren(ctx context.Context, em *entityMapping, paren
 
 		childGroups := make(map[any][]any, len(parents))
 		for _, childEntity := range childEntities {
-			parentalKey := childMapping.ExtractKey(childEntity, childMapping.ParentalKey)
+			parentalKey := childMapping.extractKey(childEntity, childMapping.parentalKey)
 			if parent, ok := parentKeyToParent[parentalKey]; ok {
 				if childGroups[parent] == nil {
 					childGroups[parent] = make([]any, 0, estimatedCapacity)
@@ -156,7 +156,7 @@ func (u *persistence) loadChildren(ctx context.Context, em *entityMapping, paren
 		}
 
 		for _, parent := range parents {
-			child.Set(parent, childGroups[parent])
+			child.set(parent, childGroups[parent])
 		}
 	}
 
@@ -173,9 +173,9 @@ func (u *persistence) save(ctx context.Context, em *entityMapping, entities []an
 		return nil, err
 	}
 
-	for _, childField := range em.ChildFields {
-		child := em.ChildMap[childField]
-		childMapping, err := u.registry.get(child.Target)
+	for _, childField := range em.childFields {
+		child := em.childMap[childField]
+		childMapping, err := u.registry.get(child.target)
 		if err != nil {
 			return nil, err
 		}
@@ -199,7 +199,7 @@ func (u *persistence) save(ctx context.Context, em *entityMapping, entities []an
 func buildChildSaveSet(childMapping *entityMapping, relation *child, parents []saveResult) []any {
 	toSave := make([]any, 0)
 	for _, result := range parents {
-		childEntities := relation.Get(result.entity)
+		childEntities := relation.get(result.entity)
 		for _, childEntity := range childEntities {
 			injectParentKey(childMapping, childEntity, result.key)
 		}
@@ -220,10 +220,10 @@ func buildRelationSnapshot(childMapping *entityMapping, relation *child, parents
 			continue
 		}
 		snapshot.parentKeys = append(snapshot.parentKeys, result.key)
-		for _, childEntity := range relation.Get(result.entity) {
+		for _, childEntity := range relation.get(result.entity) {
 			snapshot.keepPairs = append(snapshot.keepPairs, keepPair{
-				ParentKey: result.key,
-				ChildKey:  childMapping.ExtractKey(childEntity, childMapping.PrimaryKey),
+				parentKey: result.key,
+				childKey:  childMapping.extractKey(childEntity, childMapping.primaryKey),
 			})
 		}
 	}
@@ -232,19 +232,19 @@ func buildRelationSnapshot(childMapping *entityMapping, relation *child, parents
 }
 
 func injectParentKey(childMapping *entityMapping, childEntity any, parentKey Key) {
-	for i, fieldName := range childMapping.ParentalKey {
-		childMapping.FieldMap[fieldName].SetValue(childEntity, parentKey.At(i))
+	for i, fieldName := range childMapping.parentalKey {
+		childMapping.fieldMap[fieldName].setValue(childEntity, parentKey.At(i))
 	}
 }
 
 func (u *persistence) deleteMissingChildren(ctx context.Context, snapshot relationSnapshot) error {
 	op := selectMissingChildrenOp{
-		Schema:           snapshot.childMapping.Schema,
-		Table:            snapshot.childMapping.Table,
-		ParentKeyColumns: snapshot.childMapping.ParentalColumns(),
-		ChildKeyColumns:  snapshot.childMapping.PrimaryColumns(),
-		ParentKeys:       snapshot.parentKeys,
-		KeepPairs:        snapshot.keepPairs,
+		schema:           snapshot.childMapping.schema,
+		table:            snapshot.childMapping.table,
+		parentKeyColumns: snapshot.childMapping.parentalColumns,
+		childKeyColumns:  snapshot.childMapping.primaryColumns,
+		parentKeys:       snapshot.parentKeys,
+		keepPairs:        snapshot.keepPairs,
 	}
 
 	toDelete, err := u.backend.SelectMissingChildren(ctx, op)
@@ -255,12 +255,12 @@ func (u *persistence) deleteMissingChildren(ctx context.Context, snapshot relati
 }
 
 func (u *persistence) saveRows(ctx context.Context, em *entityMapping, entities []any) ([]saveResult, error) {
-	saveFields := em.SaveFields()
+	saveFields := em.saveFields
 	saveOp := saveRowsOp{
-		Schema:    em.Schema,
-		Table:     em.Table,
-		Fields:    em.SaveFieldSet(),
-		Returning: em.InsertReturningColumns(),
+		schema:    em.schema,
+		table:     em.table,
+		fields:    em.saveFieldSet,
+		returning: em.insertReturningColumns,
 	}
 	generatedInserts := make([]plannedRow, 0)
 	manualCandidates := make([]plannedRow, 0)
@@ -269,10 +269,10 @@ func (u *persistence) saveRows(ctx context.Context, em *entityMapping, entities 
 	for i, entity := range entities {
 		row := make([]any, len(saveFields))
 		for j, fieldName := range saveFields {
-			row[j] = em.FieldMap[fieldName].GetValue(entity)
+			row[j] = em.fieldMap[fieldName].getValue(entity)
 		}
-		planned := plannedRow{Index: i, Row: saveRow{Values: row}}
-		intent, err := saveOp.classifyRow(planned.Row)
+		planned := plannedRow{index: i, row: saveRow{values: row}}
+		intent, err := saveOp.classifyRow(planned.row)
 		if err != nil {
 			return nil, err
 		}
@@ -297,7 +297,7 @@ func (u *persistence) saveRows(ctx context.Context, em *entityMapping, entities 
 		}
 		existing := keySet(existingKeys)
 		for _, row := range manualCandidates {
-			if _, ok := existing[saveOp.keyFromRow(row.Row)]; ok {
+			if _, ok := existing[saveOp.keyFromRow(row.row)]; ok {
 				updateRows = append(updateRows, row)
 			} else {
 				insertRows = append(insertRows, row)
@@ -312,8 +312,8 @@ func (u *persistence) saveRows(ctx context.Context, em *entityMapping, entities 
 		}
 		existing := keySet(existingKeys)
 		for _, row := range generatedUpdates {
-			if _, ok := existing[saveOp.keyFromRow(row.Row)]; !ok {
-				return nil, fmt.Errorf("%w: generated key %v does not exist in %s", ErrStaleEntity, saveOp.keyFromRow(row.Row), em.EntityType)
+			if _, ok := existing[saveOp.keyFromRow(row.row)]; !ok {
+				return nil, fmt.Errorf("%w: generated key %v does not exist in %s", ErrStaleEntity, saveOp.keyFromRow(row.row), em.entityType)
 			}
 			updateRows = append(updateRows, row)
 		}
@@ -328,7 +328,7 @@ func (u *persistence) saveRows(ctx context.Context, em *entityMapping, entities 
 		}
 		savedRows = append(savedRows, insertedRows...)
 		for _, row := range insertRows {
-			inserted[row.Index] = true
+			inserted[row.index] = true
 		}
 	}
 	if len(updateRows) > 0 {
@@ -342,21 +342,21 @@ func (u *persistence) saveRows(ctx context.Context, em *entityMapping, entities 
 	result := make([]saveResult, len(entities))
 	seen := make([]bool, len(entities))
 	for _, saved := range savedRows {
-		if saved.Index < 0 || saved.Index >= len(entities) {
-			return nil, fmt.Errorf("returned row index %d out of range", saved.Index)
+		if saved.index < 0 || saved.index >= len(entities) {
+			return nil, fmt.Errorf("returned row index %d out of range", saved.index)
 		}
-		if seen[saved.Index] {
-			return nil, fmt.Errorf("duplicate returned row index %d", saved.Index)
+		if seen[saved.index] {
+			return nil, fmt.Errorf("duplicate returned row index %d", saved.index)
 		}
-		seen[saved.Index] = true
+		seen[saved.index] = true
 
-		if err := u.applyReturnedValues(em, entities[saved.Index], em.InsertReturning(), saved.Values); err != nil {
+		if err := u.applyReturnedValues(em, entities[saved.index], em.insertReturning, saved.values); err != nil {
 			return nil, err
 		}
-		result[saved.Index] = saveResult{
-			entity:   entities[saved.Index],
-			key:      em.ExtractKey(entities[saved.Index], em.PrimaryKey),
-			inserted: inserted[saved.Index],
+		result[saved.index] = saveResult{
+			entity:   entities[saved.index],
+			key:      em.extractKey(entities[saved.index], em.primaryKey),
+			inserted: inserted[saved.index],
 		}
 	}
 
@@ -375,11 +375,11 @@ func (u *persistence) selectExistingKeys(ctx context.Context, em *entityMapping,
 		return nil, nil
 	}
 	return u.backend.SelectExistingKeys(ctx, keyScanOp{
-		Schema:     em.Schema,
-		Table:      em.Table,
-		KeyColumns: em.PrimaryColumns(),
-		KeyTypes:   em.fieldTypes(em.PrimaryKey),
-		Keys:       keys,
+		schema:     em.schema,
+		table:      em.table,
+		keyColumns: em.primaryColumns,
+		keyTypes:   em.fieldTypes(em.primaryKey),
+		keys:       keys,
 	})
 }
 
@@ -388,7 +388,7 @@ func (u *persistence) applyReturnedValues(em *entityMapping, entity any, fieldNa
 		return fmt.Errorf("expected %d returned values, got %d", len(fieldNames), len(values))
 	}
 	for i, name := range fieldNames {
-		em.FieldMap[name].SetValue(entity, values[i])
+		em.fieldMap[name].setValue(entity, values[i])
 	}
 	return nil
 }
@@ -399,9 +399,9 @@ func (u *persistence) deleteByKeys(ctx context.Context, em *entityMapping, keys 
 		return nil
 	}
 
-	for _, childField := range em.ChildFields {
-		child := em.ChildMap[childField]
-		childMapping, err := u.registry.get(child.Target)
+	for _, childField := range em.childFields {
+		child := em.childMap[childField]
+		childMapping, err := u.registry.get(child.target)
 		if err != nil {
 			return err
 		}
@@ -416,10 +416,10 @@ func (u *persistence) deleteByKeys(ctx context.Context, em *entityMapping, keys 
 	}
 
 	return u.backend.DeleteRowsByKeys(ctx, deleteRowsOp{
-		Schema:     em.Schema,
-		Table:      em.Table,
-		KeyColumns: em.PrimaryColumns(),
-		Keys:       keys,
+		schema:     em.schema,
+		table:      em.table,
+		keyColumns: em.primaryColumns,
+		keys:       keys,
 	})
 }
 
@@ -430,11 +430,11 @@ func (u *persistence) loadKeysByParentKeys(ctx context.Context, em *entityMappin
 	}
 
 	rowSet, err := u.backend.LoadByParentKeys(ctx, loadRowsOp{
-		Schema:     em.Schema,
-		Table:      em.Table,
-		Select:     em.PrimaryColumns(),
-		KeyColumns: em.ParentalColumns(),
-		Keys:       parentKeys,
+		schema:        em.schema,
+		table:         em.table,
+		selectColumns: em.primaryColumns,
+		keyColumns:    em.parentalColumns,
+		keys:          parentKeys,
 	})
 	if err != nil {
 		return nil, err
@@ -443,11 +443,11 @@ func (u *persistence) loadKeysByParentKeys(ctx context.Context, em *entityMappin
 
 	keys := make([]Key, 0)
 	for rowSet.Next() {
-		entityPtr := reflect.New(em.EntityType).Interface()
-		if err := u.scanEntity(em, entityPtr, rowSet, em.PrimaryKey); err != nil {
+		entityPtr := reflect.New(em.entityType).Interface()
+		if err := u.scanEntity(em, entityPtr, rowSet, em.primaryKey); err != nil {
 			return nil, err
 		}
-		keys = append(keys, em.ExtractKey(entityPtr, em.PrimaryKey))
+		keys = append(keys, em.extractKey(entityPtr, em.primaryKey))
 	}
 
 	return keys, nil

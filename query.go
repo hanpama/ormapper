@@ -43,7 +43,7 @@ func NewQuery[T any](mapper *Mapper, db DBTX, alias string) *Query[T] {
 	}
 
 	if alias == "" {
-		alias = mapping.Table
+		alias = mapping.table
 	}
 
 	return &Query[T]{
@@ -62,10 +62,10 @@ func NewQuery[T any](mapper *Mapper, db DBTX, alias string) *Query[T] {
 // Join adds an INNER JOIN clause.
 func (q *Query[T]) Join(table string, alias string, on string, params ...any) *Query[T] {
 	q.joins[alias] = &join{
-		Type:  "JOIN",
-		Table: sqlText{Text: table},
-		Alias: sqlText{Text: alias},
-		On:    parseSQL(on, params...),
+		typ:   "JOIN",
+		table: sqlText{text: table},
+		alias: sqlText{text: alias},
+		on:    parseSQL(on, params...),
 	}
 	return q
 }
@@ -73,10 +73,10 @@ func (q *Query[T]) Join(table string, alias string, on string, params ...any) *Q
 // LeftJoin adds a LEFT JOIN clause.
 func (q *Query[T]) LeftJoin(table string, alias string, on string, params ...any) *Query[T] {
 	q.joins[alias] = &join{
-		Type:  "LEFT JOIN",
-		Table: sqlText{Text: table},
-		Alias: sqlText{Text: alias},
-		On:    parseSQL(on, params...),
+		typ:   "LEFT JOIN",
+		table: sqlText{text: table},
+		alias: sqlText{text: alias},
+		on:    parseSQL(on, params...),
 	}
 	return q
 }
@@ -95,9 +95,9 @@ func (q *Query[T]) Having(condition string, params ...any) *Query[T] {
 
 // GroupByPrimaryKey groups by the mapped entity primary key columns.
 func (q *Query[T]) GroupByPrimaryKey() *Query[T] {
-	for _, fieldName := range q.mapping.PrimaryKey {
-		field := q.mapping.FieldMap[fieldName]
-		q.groupByExprs = append(q.groupByExprs, sqlQN{Part1: q.alias, Part2: field.Column})
+	for _, fieldName := range q.mapping.primaryKey {
+		field := q.mapping.fieldMap[fieldName]
+		q.groupByExprs = append(q.groupByExprs, sqlQN{part1: q.alias, part2: field.column})
 	}
 	return q
 }
@@ -134,19 +134,19 @@ func (q *Query[T]) Desc(expr string, params ...any) OrderExpr {
 }
 
 func (q *Query[T]) buildSelectColumns() []sqlNode {
-	selectCols := make([]sqlNode, len(q.mapping.AllFields))
-	for i, fieldName := range q.mapping.AllFields {
-		field := q.mapping.FieldMap[fieldName]
-		selectCols[i] = sqlQN{Part1: q.alias, Part2: field.Column}
+	selectCols := make([]sqlNode, len(q.mapping.allFields))
+	for i, fieldName := range q.mapping.allFields {
+		field := q.mapping.fieldMap[fieldName]
+		selectCols[i] = sqlQN{part1: q.alias, part2: field.column}
 	}
 	return selectCols
 }
 
 func (q *Query[T]) buildPrimaryKeyColumns() []sqlNode {
-	selectCols := make([]sqlNode, 0, len(q.mapping.PrimaryKey))
-	for _, fieldName := range q.mapping.PrimaryKey {
-		field := q.mapping.FieldMap[fieldName]
-		selectCols = append(selectCols, sqlQN{Part1: q.alias, Part2: field.Column})
+	selectCols := make([]sqlNode, 0, len(q.mapping.primaryKey))
+	for _, fieldName := range q.mapping.primaryKey {
+		field := q.mapping.fieldMap[fieldName]
+		selectCols = append(selectCols, sqlQN{part1: q.alias, part2: field.column})
 	}
 	return selectCols
 }
@@ -163,7 +163,7 @@ func (q *Query[T]) buildWhereClause() *sqlNode {
 	if len(q.whereConds) == 0 {
 		return nil
 	}
-	var w sqlNode = sqlAll{Els: q.whereConds}
+	var w sqlNode = sqlAll{els: q.whereConds}
 	return &w
 }
 
@@ -171,7 +171,7 @@ func (q *Query[T]) buildHavingClause() *sqlNode {
 	if len(q.havingConds) == 0 {
 		return nil
 	}
-	var h sqlNode = sqlAll{Els: q.havingConds}
+	var h sqlNode = sqlAll{els: q.havingConds}
 	return &h
 }
 
@@ -185,25 +185,25 @@ func (q *Query[T]) buildGroupBy() []sqlNode {
 func (q *Query[T]) fetch(ctx context.Context, limit *int) ([]*T, error) {
 	var limitSQL, offsetSQL *sqlNode
 	if limit != nil {
-		var l sqlNode = sqlParam{Value: *limit}
+		var l sqlNode = sqlParam{value: *limit}
 		limitSQL = &l
 	}
 	if q.offset != nil {
-		var o sqlNode = sqlParam{Value: *q.offset}
+		var o sqlNode = sqlParam{value: *q.offset}
 		offsetSQL = &o
 	}
 
 	stmt := sqlQuery{
-		Select:    q.buildSelectColumns(),
-		FromTable: sqlQN{Part1: q.mapping.Schema, Part2: q.mapping.Table},
-		FromAlias: sqlText{Text: q.alias},
-		Joins:     q.buildJoins(),
-		Where:     q.buildWhereClause(),
-		GroupBy:   q.buildGroupBy(),
-		Having:    q.buildHavingClause(),
-		OrderBys:  q.orderByOpts,
-		Limit:     limitSQL,
-		Offset:    offsetSQL,
+		selectColumns: q.buildSelectColumns(),
+		fromTable:     sqlQN{part1: q.mapping.schema, part2: q.mapping.table},
+		fromAlias:     sqlText{text: q.alias},
+		joins:         q.buildJoins(),
+		where:         q.buildWhereClause(),
+		groupBy:       q.buildGroupBy(),
+		having:        q.buildHavingClause(),
+		orderBys:      q.orderByOpts,
+		limit:         limitSQL,
+		offset:        offsetSQL,
 	}
 
 	backend := q.mapper.dialect.newBackend(q.db)
@@ -221,14 +221,14 @@ func (q *Query[T]) fetch(ctx context.Context, limit *int) ([]*T, error) {
 	u := newPersistence(q.mapper.mappings, backend)
 	entities := make([]any, 0, expectedCapacity)
 	for rows.Next() {
-		entityPtr := reflect.New(q.mapping.EntityType).Interface()
-		if err := u.scanEntity(q.mapping, entityPtr, rows, q.mapping.AllFields); err != nil {
+		entityPtr := reflect.New(q.mapping.entityType).Interface()
+		if err := u.scanEntity(q.mapping, entityPtr, rows, q.mapping.allFields); err != nil {
 			return nil, err
 		}
 		entities = append(entities, entityPtr)
 	}
 
-	if len(entities) > 0 && len(q.mapping.ChildMap) > 0 {
+	if len(entities) > 0 && len(q.mapping.childMap) > 0 {
 		if err := u.loadChildren(ctx, q.mapping, entities); err != nil {
 			return nil, err
 		}
@@ -268,13 +268,13 @@ func (q *Query[T]) FetchOne(ctx context.Context) (*T, error) {
 // Count returns the number of rows that match the current query.
 func (q *Query[T]) Count(ctx context.Context) (int64, error) {
 	stmt := sqlQuery{
-		Select:    q.buildPrimaryKeyColumns(),
-		FromTable: sqlQN{Part1: q.mapping.Schema, Part2: q.mapping.Table},
-		FromAlias: sqlText{Text: q.alias},
-		Joins:     q.buildJoins(),
-		Where:     q.buildWhereClause(),
-		GroupBy:   q.buildGroupBy(),
-		Having:    q.buildHavingClause(),
+		selectColumns: q.buildPrimaryKeyColumns(),
+		fromTable:     sqlQN{part1: q.mapping.schema, part2: q.mapping.table},
+		fromAlias:     sqlText{text: q.alias},
+		joins:         q.buildJoins(),
+		where:         q.buildWhereClause(),
+		groupBy:       q.buildGroupBy(),
+		having:        q.buildHavingClause(),
 	}
 
 	return q.mapper.dialect.newBackend(q.db).CountQuery(ctx, stmt)
