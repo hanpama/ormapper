@@ -107,3 +107,162 @@ func validateEntityPtr(entity any, op string) error {
 	}
 	return nil
 }
+
+type entityMetadata struct {
+	Schema string
+	Table  string
+	Fields []fieldMetadata
+}
+
+func buildEntityMappings(
+	meta map[reflect.Type]entityMetadata,
+	registered map[reflect.Type]bool,
+) mappingRegistry {
+	result := make(mappingRegistry, len(meta))
+
+	for entityType, entityMeta := range meta {
+		mapping := buildSingleMapping(entityType, entityMeta, registered)
+		result[entityType] = mapping
+	}
+
+	return result
+}
+
+func buildSingleMapping(
+	entityType reflect.Type,
+	entityMeta entityMetadata,
+	registered map[reflect.Type]bool,
+) *entityMapping {
+	fieldMap := make(map[string]*field)
+	childMap := make(map[string]*child)
+	childFields := []string{}
+	allFields := []string{}
+	primaryKey := []string{}
+	parentalKey := []string{}
+	insertable := []string{}
+	updatable := []string{}
+
+	for _, metadata := range entityMeta.Fields {
+		fieldName := metadata.Name
+		fieldType := metadata.Typ
+
+		if metadata.IgnoreTag {
+			continue
+		}
+
+		isChild := metadata.ChildTag
+		var childTarget reflect.Type
+		var childSingular bool
+
+		if !isChild {
+			if fieldType.Kind() == reflect.Slice {
+				elemType := fieldType.Elem()
+				if elemType.Kind() == reflect.Ptr {
+					targetType := elemType.Elem()
+					if registered[targetType] {
+						isChild = true
+						childTarget = targetType
+						childSingular = false
+					}
+				}
+			}
+
+			if !isChild && fieldType.Kind() == reflect.Ptr {
+				targetType := fieldType.Elem()
+				if registered[targetType] {
+					isChild = true
+					childTarget = targetType
+					childSingular = true
+				}
+			}
+		} else {
+			if fieldType.Kind() == reflect.Slice {
+				elemType := fieldType.Elem()
+				if elemType.Kind() == reflect.Ptr {
+					childTarget = elemType.Elem()
+					childSingular = false
+				}
+			} else if fieldType.Kind() == reflect.Ptr {
+				childTarget = fieldType.Elem()
+				childSingular = true
+			}
+		}
+
+		if isChild {
+			child := child{
+				Target:     childTarget,
+				Singular:   childSingular,
+				Type:       fieldType,
+				FieldIndex: metadata.FieldIndex,
+			}
+			childMap[fieldName] = &child
+			childFields = append(childFields, fieldName)
+			continue
+		}
+
+		if fieldType.Kind() == reflect.Slice {
+			continue
+		}
+
+		if fieldType.Kind() == reflect.Ptr && fieldType.Elem().Kind() == reflect.Struct {
+			continue
+		}
+
+		columnName := metadata.ColumnTag
+		if columnName == "" {
+			columnName = metadata.DefaultColumn
+		}
+
+		field := field{
+			Name:       metadata.Name,
+			Column:     columnName,
+			Type:       metadata.Typ,
+			FieldIndex: metadata.FieldIndex,
+		}
+
+		fieldMap[fieldName] = &field
+
+		isPrimaryKey := metadata.PrimaryTag
+		isParentalKey := metadata.ParentalTag
+
+		if !isPrimaryKey && !isParentalKey && fieldName == "ID" {
+			isPrimaryKey = true
+		}
+
+		allFields = append(allFields, fieldName)
+
+		if isPrimaryKey {
+			primaryKey = append(primaryKey, fieldName)
+		}
+		if isParentalKey {
+			parentalKey = append(parentalKey, fieldName)
+		}
+
+		if isPrimaryKey || isParentalKey {
+			if !metadata.SkipInsertTag {
+				insertable = append(insertable, fieldName)
+			}
+		} else {
+			if !metadata.SkipInsertTag {
+				insertable = append(insertable, fieldName)
+			}
+			if !metadata.SkipUpdateTag {
+				updatable = append(updatable, fieldName)
+			}
+		}
+	}
+
+	return newEntityMapping(
+		entityType,
+		entityMeta.Schema,
+		entityMeta.Table,
+		fieldMap,
+		childMap,
+		childFields,
+		allFields,
+		primaryKey,
+		parentalKey,
+		insertable,
+		updatable,
+	)
+}

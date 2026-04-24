@@ -15,7 +15,6 @@ graph TD
   query_go["query.go\npublic Query API"]
 
   analyze_go["analyze.go\nstruct tag analysis"]
-  build_go["build.go\nmapping construction"]
   registry_go["registry.go\nmapping lookup"]
   mapping_go["mapping.go\nentity metadata and reflect access"]
   mapping_key_go["mapping_key.go\nentityMapping.ExtractKey"]
@@ -35,13 +34,11 @@ graph TD
   package_go --> backend_go
 
   compile_go --> analyze_go
-  compile_go --> build_go
   compile_go --> mapper_go
   compile_go --> backend_go
-
-  build_go --> analyze_go
-  build_go --> mapping_go
-  build_go --> registry_go
+  compile_go --> analyze_go
+  compile_go --> mapping_go
+  compile_go --> registry_go
 
   mapper_go --> backend_go
   mapper_go --> registry_go
@@ -113,9 +110,8 @@ graph TD
 |---|---|
 | `package.go` | Package documentation and built-in dialect entry points. |
 | `backend.go` | Public DB handle abstraction plus internal backend contract. |
-| `compile.go` | Public mapping registration and compilation API. |
+| `compile.go` | Public mapping registration plus private mapping construction subroutines. |
 | `analyze.go` | Struct field and tag analysis. |
-| `build.go` | Conversion from analyzed metadata to compiled mappings. |
 | `registry.go` | Mapping lookup abstraction shared by Mapper and persistence. |
 | `mapper.go` | Public aggregate API: `Get`, `Save`, `Delete`. |
 | `query.go` | Public typed query API. |
@@ -135,6 +131,7 @@ graph TD
 - `dialect.go`: split into `package.go` and `backend.go`; concrete dialect
   methods moved to engine files.
 - `doc.go`: package documentation moved to `package.go`.
+- `build.go`: compile subroutines moved under `compile.go`.
 - `persistence_op.go`: renamed and merged into `persistence.go`.
 - `save_graph.go`: merged into `persistence.go`.
 - `extract.go`: renamed to `mapping_key.go`.

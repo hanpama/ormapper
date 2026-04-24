@@ -548,6 +548,7 @@ operations.go / backend_helpers.go
 
 Important dependency rules:
 
+- Compile subroutines that only serve `Compile` stay in `compile.go` below the public compile API.
 - `backend.go` never imports or references `postgres.go` or `sqlite.go`.
 - `persistence.go` never depends on `Mapper`.
 - `mapping.go` never depends on persistence helpers.
