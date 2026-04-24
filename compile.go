@@ -61,11 +61,18 @@ func Compile(dialect Dialect, mappings ...Mapping) (*Mapper, error) {
 
 	for _, mapping := range mappings {
 		entityPtr := mapping.ptr
-		if err := validateEntityPtr(entityPtr, "Compile"); err != nil {
-			return nil, err
+		entityPtrType := reflect.TypeOf(entityPtr)
+		if entityPtrType == nil {
+			return nil, fmt.Errorf("Compile: entity must be a pointer to struct, got <nil>")
+		}
+		if entityPtrType.Kind() != reflect.Ptr {
+			return nil, fmt.Errorf("Compile: entity must be a pointer to struct, got %s", entityPtrType)
+		}
+		if entityPtrType.Elem().Kind() != reflect.Struct {
+			return nil, fmt.Errorf("Compile: entity must be a pointer to struct, got %s", entityPtrType)
 		}
 
-		entityType := reflect.TypeOf(entityPtr).Elem()
+		entityType := entityPtrType.Elem()
 		entityMeta := entityMetadata{
 			Table:  toSnakeCase(entityType.Name()),
 			Fields: analyzeStruct(entityType),
@@ -92,20 +99,6 @@ func MustCompile(dialect Dialect, mappings ...Mapping) *Mapper {
 		panic(err)
 	}
 	return mapper
-}
-
-func validateEntityPtr(entity any, op string) error {
-	entityType := reflect.TypeOf(entity)
-	if entityType == nil {
-		return fmt.Errorf("%s: entity must be a pointer to struct, got <nil>", op)
-	}
-	if entityType.Kind() != reflect.Ptr {
-		return fmt.Errorf("%s: entity must be a pointer to struct, got %s", op, entityType)
-	}
-	if entityType.Elem().Kind() != reflect.Struct {
-		return fmt.Errorf("%s: entity must be a pointer to struct, got %s", op, entityType)
-	}
-	return nil
 }
 
 type entityMetadata struct {
