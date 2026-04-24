@@ -200,25 +200,6 @@ func (em *entityMapping) fieldTypes(fieldNames []string) []reflect.Type {
 	return types
 }
 
-func (em *entityMapping) allPrimaryKeyGenerated() bool {
-	for _, name := range em.PrimaryKey {
-		if containsField(em.Insertable, name) {
-			return false
-		}
-	}
-	return len(em.PrimaryKey) > 0
-}
-
-func (em *entityMapping) primaryKeyIsZero(entity any) bool {
-	for _, name := range em.PrimaryKey {
-		value := reflect.ValueOf(em.FieldMap[name].GetValue(entity))
-		if value.IsValid() && !value.IsZero() {
-			return false
-		}
-	}
-	return true
-}
-
 func containsField(fields []string, name string) bool {
 	for _, field := range fields {
 		if field == name {

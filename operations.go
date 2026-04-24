@@ -119,14 +119,6 @@ func (op saveRowsOp) insertValuesForRow(row saveRow) []any {
 	return projected
 }
 
-func (op saveRowsOp) insertValuesForRows(rows []saveRow) [][]any {
-	values := make([][]any, len(rows))
-	for i, row := range rows {
-		values[i] = op.insertValuesForRow(row)
-	}
-	return values
-}
-
 func (op saveRowsOp) primaryKeyIndexes() []int {
 	indexes := make([]int, 0, len(op.Fields))
 	for i, field := range op.Fields {
