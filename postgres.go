@@ -7,6 +7,10 @@ import (
 	"strconv"
 )
 
+type postgresDialect struct{}
+
+func (postgresDialect) newBackend(db DBTX) backend { return newPostgreSQLBackend(db) }
+
 // postgreSQLBackend implements backend for PostgreSQL databases.
 type postgreSQLBackend struct {
 	db         DBTX
@@ -71,6 +75,27 @@ func (b *postgreSQLBackend) quoteTable(schema, table string) {
 		b.writeByte('.')
 	}
 	b.quoteIdentifier(table)
+}
+
+func pgSerialSequenceTableName(schema, table string) string {
+	if schema == "" {
+		return pgIdentifierText(table)
+	}
+	return pgIdentifierText(schema) + "." + pgIdentifierText(table)
+}
+
+func pgIdentifierText(identifier string) string {
+	quoted := make([]byte, 0, len(identifier)+2)
+	quoted = append(quoted, '"')
+	for i := 0; i < len(identifier); i++ {
+		if identifier[i] == '"' {
+			quoted = append(quoted, '"', '"')
+		} else {
+			quoted = append(quoted, identifier[i])
+		}
+	}
+	quoted = append(quoted, '"')
+	return string(quoted)
 }
 
 // sqlString returns the current SQL buffer as a string.
@@ -250,7 +275,7 @@ func (b *postgreSQLBackend) renderSQLQuery(stmt sqlQuery) (string, []any) {
 // Query format: WITH "$k" (col1, col2) AS (VALUES ($1, $2), ($3, $4))
 //
 //	SELECT table.* FROM table JOIN "$k" ON table.col1 = "$k".col1 AND table.col2 = "$k".col2
-func (b *postgreSQLBackend) renderSelect(stmt selectOp, chunk [][]any) (string, []any) {
+func (b *postgreSQLBackend) renderSelect(stmt loadRowsOp, chunk [][]any) (string, []any) {
 	b.paramIndex = 0
 	numKeyColumns := len(stmt.KeyColumns)
 	b.resetArgsBuffer(len(chunk) * numKeyColumns)
@@ -279,7 +304,7 @@ func (b *postgreSQLBackend) renderSelect(stmt selectOp, chunk [][]any) (string, 
 			if idx == 0 {
 				// First row: use COALESCE to infer type from table schema
 				b.writeString("COALESCE((NULL::")
-				b.quoteTable(stmt.FromSchema, stmt.FromTable)
+				b.quoteTable(stmt.Schema, stmt.Table)
 				b.writeString(").")
 				b.quoteIdentifier(stmt.KeyColumns[j])
 				b.writeString(", $")
@@ -301,20 +326,20 @@ func (b *postgreSQLBackend) renderSelect(stmt selectOp, chunk [][]any) (string, 
 		if i > 0 {
 			b.writeString(", ")
 		}
-		b.quoteIdentifier(stmt.FromTable)
+		b.quoteIdentifier(stmt.Table)
 		b.writeByte('.')
 		b.quoteIdentifier(col)
 	}
 
 	b.writeString(" FROM ")
-	b.quoteTable(stmt.FromSchema, stmt.FromTable)
+	b.quoteTable(stmt.Schema, stmt.Table)
 
 	b.writeString(" JOIN \"$k\" ON ")
 	for j, col := range stmt.KeyColumns {
 		if j > 0 {
 			b.writeString(" AND ")
 		}
-		b.quoteIdentifier(stmt.FromTable)
+		b.quoteIdentifier(stmt.Table)
 		b.writeByte('.')
 		b.quoteIdentifier(col)
 		b.writeString(" = \"$k\".")
@@ -324,19 +349,14 @@ func (b *postgreSQLBackend) renderSelect(stmt selectOp, chunk [][]any) (string, 
 	return b.sqlString(), b.argsBuffer
 }
 
-// renderInsert renders a CTE-based INSERT SELECT pattern with RETURNING
-// Query format: WITH new_rows AS (SELECT col1, col2 FROM table WHERE FALSE UNION ALL VALUES ($1, $2))
-//
-//	INSERT INTO table SELECT * FROM new_rows RETURNING ...
-func (b *postgreSQLBackend) renderInsert(stmt insertOp, chunk [][]any) (string, []any) {
+func (b *postgreSQLBackend) renderSelectExistingKeys(stmt keyScanOp, chunk [][]any) (string, []any) {
 	b.paramIndex = 0
-	numColumns := len(stmt.Insert)
-	b.resetArgsBuffer(len(chunk) * numColumns)
-
+	numKeyColumns := len(stmt.KeyColumns)
+	b.resetArgsBuffer(len(chunk) * numKeyColumns)
 	b.resetSQLBuffer(512)
 
-	b.writeString("WITH \"$r\" (")
-	for i, col := range stmt.Insert {
+	b.writeString("WITH \"$k\" (")
+	for i, col := range stmt.KeyColumns {
 		if i > 0 {
 			b.writeString(", ")
 		}
@@ -349,95 +369,16 @@ func (b *postgreSQLBackend) renderInsert(stmt insertOp, chunk [][]any) (string, 
 			b.writeString(", ")
 		}
 		b.writeByte('(')
-		for j := range stmt.Insert {
-			if j > 0 {
-				b.writeString(", ")
-			}
-			b.paramIndex++
-			if idx == 0 {
-				// First row: use COALESCE to infer type from table schema
-				b.writeString("COALESCE((NULL::")
-				b.quoteTable(stmt.IntoSchema, stmt.IntoTable)
-				b.writeString(").")
-				b.quoteIdentifier(stmt.Insert[j])
-				b.writeString(", $")
-				b.writeString(strconv.Itoa(b.paramIndex))
-				b.writeByte(')')
-			} else {
-				// Subsequent rows: just use placeholder
-				b.writeByte('$')
-				b.writeString(strconv.Itoa(b.paramIndex))
-			}
-			b.argsBuffer = append(b.argsBuffer, row[j])
-		}
-		b.writeByte(')')
-	}
-	b.writeString(") ")
-
-	b.writeString("INSERT INTO ")
-	b.quoteTable(stmt.IntoSchema, stmt.IntoTable)
-	b.writeString(" (")
-	for i, col := range stmt.Insert {
-		if i > 0 {
-			b.writeString(", ")
-		}
-		b.quoteIdentifier(col)
-	}
-	b.writeString(") SELECT ")
-	for i, col := range stmt.Insert {
-		if i > 0 {
-			b.writeString(", ")
-		}
-		b.quoteIdentifier(col)
-	}
-	b.writeString(" FROM \"$r\"")
-
-	if len(stmt.Returning) > 0 {
-		b.writeString(" RETURNING ")
-		for i, col := range stmt.Returning {
-			if i > 0 {
-				b.writeString(", ")
-			}
-			b.quoteIdentifier(stmt.IntoTable)
-			b.writeByte('.')
-			b.quoteIdentifier(col)
-		}
-	}
-
-	return b.sqlString(), b.argsBuffer
-}
-
-func (b *postgreSQLBackend) renderUpsert(stmt upsertOp, chunk [][]any) (string, []any) {
-	b.paramIndex = 0
-	numColumns := len(stmt.Insert)
-	b.resetArgsBuffer(len(chunk) * numColumns)
-
-	b.resetSQLBuffer(512)
-
-	b.writeString("WITH \"$r\" (")
-	for i, col := range stmt.Insert {
-		if i > 0 {
-			b.writeString(", ")
-		}
-		b.quoteIdentifier(col)
-	}
-	b.writeString(") AS (VALUES ")
-
-	for idx, row := range chunk {
-		if idx > 0 {
-			b.writeString(", ")
-		}
-		b.writeByte('(')
-		for j := range stmt.Insert {
+		for j := range stmt.KeyColumns {
 			if j > 0 {
 				b.writeString(", ")
 			}
 			b.paramIndex++
 			if idx == 0 {
 				b.writeString("COALESCE((NULL::")
-				b.quoteTable(stmt.IntoSchema, stmt.IntoTable)
+				b.quoteTable(stmt.Schema, stmt.Table)
 				b.writeString(").")
-				b.quoteIdentifier(stmt.Insert[j])
+				b.quoteIdentifier(stmt.KeyColumns[j])
 				b.writeString(", $")
 				b.writeString(strconv.Itoa(b.paramIndex))
 				b.writeByte(')')
@@ -451,159 +392,302 @@ func (b *postgreSQLBackend) renderUpsert(stmt upsertOp, chunk [][]any) (string, 
 	}
 	b.writeString(") ")
 
-	b.writeString("INSERT INTO ")
-	b.quoteTable(stmt.IntoSchema, stmt.IntoTable)
-	b.writeString(" (")
-	for i, col := range stmt.Insert {
+	b.writeString("SELECT ")
+	for i, col := range stmt.KeyColumns {
 		if i > 0 {
 			b.writeString(", ")
 		}
-		b.quoteIdentifier(col)
-	}
-	b.writeString(") SELECT ")
-	for i, col := range stmt.Insert {
-		if i > 0 {
-			b.writeString(", ")
-		}
-		b.quoteIdentifier(col)
-	}
-	b.writeString(" FROM \"$r\"")
-
-	b.writeString(" ON CONFLICT (")
-	for i, col := range stmt.Conflict {
-		if i > 0 {
-			b.writeString(", ")
-		}
-		b.quoteIdentifier(col)
-	}
-	b.writeString(") DO UPDATE SET ")
-
-	updateCols := stmt.Update
-	if len(updateCols) == 0 {
-		updateCols = stmt.Conflict[:1]
-	}
-	for i, col := range updateCols {
-		if i > 0 {
-			b.writeString(", ")
-		}
-		b.quoteIdentifier(col)
-		b.writeString(" = EXCLUDED.")
+		b.writeString("\"$k\".")
 		b.quoteIdentifier(col)
 	}
 
-	if len(stmt.Returning) > 0 {
-		b.writeString(" RETURNING ")
-		for i, col := range stmt.Returning {
-			if i > 0 {
-				b.writeString(", ")
-			}
-			b.quoteIdentifier(stmt.IntoTable)
-			b.writeByte('.')
-			b.quoteIdentifier(col)
-		}
-	}
-
-	return b.sqlString(), b.argsBuffer
-}
-
-// renderUpdate renders a CTE-based UPDATE FROM pattern with UNION for type inference
-// Query format: WITH "$v" AS (SELECT ... FROM table WHERE FALSE UNION ALL VALUES (...))
-//
-//	UPDATE table SET col = "$v".col FROM "$v" WHERE table.id = "$v".id
-func (b *postgreSQLBackend) renderUpdate(stmt updateOp, setChunk, whereChunk [][]any) (string, []any) {
-	b.paramIndex = 0
-
-	numColumns := len(stmt.Sets) + len(stmt.Where)
-	b.resetArgsBuffer(len(setChunk) * numColumns)
-
-	b.resetSQLBuffer(512)
-
-	b.writeString("WITH \"$v\" (")
-	for i, col := range stmt.Sets {
-		if i > 0 {
-			b.writeString(", ")
-		}
-		b.quoteIdentifier(col)
-	}
-	for _, col := range stmt.Where {
-		b.writeString(", ")
-		b.quoteIdentifier(col)
-	}
-	b.writeString(") AS (VALUES ")
-
-	for idx := range setChunk {
-		if idx > 0 {
-			b.writeString(", ")
-		}
-		b.writeByte('(')
-		for j, val := range setChunk[idx] {
-			if j > 0 {
-				b.writeString(", ")
-			}
-			b.paramIndex++
-			if idx == 0 {
-				// First row: use COALESCE to infer type from table schema
-				b.writeString("COALESCE((NULL::")
-				b.quoteTable(stmt.Schema, stmt.Table)
-				b.writeString(").")
-				b.quoteIdentifier(stmt.Sets[j])
-				b.writeString(", $")
-				b.writeString(strconv.Itoa(b.paramIndex))
-				b.writeByte(')')
-			} else {
-				// Subsequent rows: just use placeholder
-				b.writeByte('$')
-				b.writeString(strconv.Itoa(b.paramIndex))
-			}
-			b.argsBuffer = append(b.argsBuffer, val)
-		}
-		for j, val := range whereChunk[idx] {
-			b.writeString(", ")
-			b.paramIndex++
-			if idx == 0 {
-				// First row: use COALESCE to infer type from table schema
-				b.writeString("COALESCE((NULL::")
-				b.quoteTable(stmt.Schema, stmt.Table)
-				b.writeString(").")
-				b.quoteIdentifier(stmt.Where[j])
-				b.writeString(", $")
-				b.writeString(strconv.Itoa(b.paramIndex))
-				b.writeByte(')')
-			} else {
-				// Subsequent rows: just use placeholder
-				b.writeByte('$')
-				b.writeString(strconv.Itoa(b.paramIndex))
-			}
-			b.argsBuffer = append(b.argsBuffer, val)
-		}
-		b.writeByte(')')
-	}
-	b.writeString(") ")
-
-	b.writeString("UPDATE ")
+	b.writeString(" FROM \"$k\" JOIN ")
 	b.quoteTable(stmt.Schema, stmt.Table)
-	b.writeString(" SET ")
-	for i, col := range stmt.Sets {
-		if i > 0 {
-			b.writeString(", ")
-		}
-		b.quoteIdentifier(col)
-		b.writeString(" = \"$v\".")
-		b.quoteIdentifier(col)
-	}
-
-	b.writeString(" FROM \"$v\"")
-
-	b.writeString(" WHERE ")
-	for i, col := range stmt.Where {
+	b.writeString(" ON ")
+	for i, col := range stmt.KeyColumns {
 		if i > 0 {
 			b.writeString(" AND ")
 		}
 		b.quoteIdentifier(stmt.Table)
 		b.writeByte('.')
 		b.quoteIdentifier(col)
-		b.writeString(" = \"$v\".")
+		b.writeString(" = \"$k\".")
 		b.quoteIdentifier(col)
+	}
+
+	return b.sqlString(), b.argsBuffer
+}
+
+func (b *postgreSQLBackend) renderGeneratedInsertRows(stmt saveRowsOp, indexes []int, rows []saveRow) (string, []any) {
+	b.paramIndex = 0
+	insertColumns := stmt.insertColumns()
+	generatedPrimaryFields := stmt.generatedPrimaryFields()
+	b.resetArgsBuffer(len(rows)*len(insertColumns) + len(generatedPrimaryFields)*2)
+	b.resetSQLBuffer(768)
+
+	b.writeString("WITH \"$r\" (")
+	b.quoteIdentifier("$i")
+	for _, col := range insertColumns {
+		b.writeString(", ")
+		b.quoteIdentifier(col)
+	}
+	b.writeString(") AS (VALUES ")
+
+	for idx, row := range rows {
+		if idx > 0 {
+			b.writeString(", ")
+		}
+		b.writeByte('(')
+		b.writeString(strconv.Itoa(indexes[idx]))
+		values := stmt.insertValuesForRow(row)
+		for j, val := range values {
+			b.writeString(", ")
+			b.paramIndex++
+			if idx == 0 {
+				b.writeString("COALESCE((NULL::")
+				b.quoteTable(stmt.Schema, stmt.Table)
+				b.writeString(").")
+				b.quoteIdentifier(insertColumns[j])
+				b.writeString(", $")
+				b.writeString(strconv.Itoa(b.paramIndex))
+				b.writeByte(')')
+			} else {
+				b.writeByte('$')
+				b.writeString(strconv.Itoa(b.paramIndex))
+			}
+			b.argsBuffer = append(b.argsBuffer, val)
+		}
+		b.writeByte(')')
+	}
+	b.writeByte(')')
+
+	b.writeString(", \"$a\" AS (SELECT ")
+	b.quoteIdentifier("$i")
+	for _, field := range generatedPrimaryFields {
+		b.writeString(", nextval(pg_get_serial_sequence($")
+		b.paramIndex++
+		b.writeString(strconv.Itoa(b.paramIndex))
+		b.writeString(", $")
+		b.paramIndex++
+		b.writeString(strconv.Itoa(b.paramIndex))
+		b.writeString(")::regclass) AS ")
+		b.quoteIdentifier(field.Column)
+		b.argsBuffer = append(b.argsBuffer, pgSerialSequenceTableName(stmt.Schema, stmt.Table), field.Column)
+	}
+	for _, col := range insertColumns {
+		b.writeString(", ")
+		b.quoteIdentifier(col)
+	}
+	b.writeString(" FROM \"$r\")")
+
+	b.writeString(", \"$ins\" AS (INSERT INTO ")
+	b.quoteTable(stmt.Schema, stmt.Table)
+	b.writeString(" (")
+	insertWithGenerated := stmt.insertColumnsWithGeneratedPrimary()
+	for i, col := range insertWithGenerated {
+		if i > 0 {
+			b.writeString(", ")
+		}
+		b.quoteIdentifier(col)
+	}
+	b.writeString(") SELECT ")
+	for i, col := range insertWithGenerated {
+		if i > 0 {
+			b.writeString(", ")
+		}
+		b.quoteIdentifier(col)
+	}
+	b.writeString(" FROM \"$a\" ORDER BY ")
+	b.quoteIdentifier("$i")
+	b.writeString(" RETURNING ")
+	for i, col := range stmt.Returning {
+		if i > 0 {
+			b.writeString(", ")
+		}
+		b.quoteIdentifier(stmt.Table)
+		b.writeByte('.')
+		b.quoteIdentifier(col)
+	}
+	b.writeByte(')')
+
+	b.writeString(" SELECT \"$a\".")
+	b.quoteIdentifier("$i")
+	for _, col := range stmt.Returning {
+		b.writeString(", \"$ins\".")
+		b.quoteIdentifier(col)
+	}
+	b.writeString(" FROM \"$ins\" JOIN \"$a\" ON ")
+	for i, field := range generatedPrimaryFields {
+		if i > 0 {
+			b.writeString(" AND ")
+		}
+		b.writeString("\"$ins\".")
+		b.quoteIdentifier(field.Column)
+		b.writeString(" = \"$a\".")
+		b.quoteIdentifier(field.Column)
+	}
+	b.writeString(" ORDER BY \"$a\".")
+	b.quoteIdentifier("$i")
+
+	return b.sqlString(), b.argsBuffer
+}
+
+func (b *postgreSQLBackend) renderInsertRows(stmt saveRowsOp, rows []saveRow) (string, []any) {
+	b.paramIndex = 0
+	insertColumns := stmt.insertColumns()
+	b.resetArgsBuffer(len(rows) * len(insertColumns))
+	b.resetSQLBuffer(512)
+
+	b.writeString("WITH \"$r\" (")
+	for i, col := range insertColumns {
+		if i > 0 {
+			b.writeString(", ")
+		}
+		b.quoteIdentifier(col)
+	}
+	b.writeString(") AS (VALUES ")
+
+	for idx, row := range rows {
+		if idx > 0 {
+			b.writeString(", ")
+		}
+		b.writeByte('(')
+		values := stmt.insertValuesForRow(row)
+		for j, val := range values {
+			if j > 0 {
+				b.writeString(", ")
+			}
+			b.paramIndex++
+			if idx == 0 {
+				b.writeString("COALESCE((NULL::")
+				b.quoteTable(stmt.Schema, stmt.Table)
+				b.writeString(").")
+				b.quoteIdentifier(insertColumns[j])
+				b.writeString(", $")
+				b.writeString(strconv.Itoa(b.paramIndex))
+				b.writeByte(')')
+			} else {
+				b.writeByte('$')
+				b.writeString(strconv.Itoa(b.paramIndex))
+			}
+			b.argsBuffer = append(b.argsBuffer, val)
+		}
+		b.writeByte(')')
+	}
+	b.writeString(") ")
+
+	b.writeString("INSERT INTO ")
+	b.quoteTable(stmt.Schema, stmt.Table)
+	b.writeString(" (")
+	for i, col := range insertColumns {
+		if i > 0 {
+			b.writeString(", ")
+		}
+		b.quoteIdentifier(col)
+	}
+	b.writeString(") SELECT ")
+	for i, col := range insertColumns {
+		if i > 0 {
+			b.writeString(", ")
+		}
+		b.quoteIdentifier(col)
+	}
+	b.writeString(" FROM \"$r\"")
+
+	if len(stmt.Returning) > 0 {
+		b.writeString(" RETURNING ")
+		for i, col := range stmt.Returning {
+			if i > 0 {
+				b.writeString(", ")
+			}
+			b.quoteIdentifier(stmt.Table)
+			b.writeByte('.')
+			b.quoteIdentifier(col)
+		}
+	}
+
+	return b.sqlString(), b.argsBuffer
+}
+
+func (b *postgreSQLBackend) renderUpdateRows(stmt saveRowsOp, rows []saveRow) (string, []any) {
+	b.paramIndex = 0
+	rowColumns := stmt.rowColumns()
+	keyColumns := stmt.conflictColumns()
+	updateColumns := stmt.updateColumns()
+	if len(updateColumns) == 0 {
+		updateColumns = keyColumns[:1]
+	}
+	b.resetArgsBuffer(len(rows) * len(rowColumns))
+	b.resetSQLBuffer(512)
+
+	b.writeString("WITH \"$r\" (")
+	for i, col := range rowColumns {
+		if i > 0 {
+			b.writeString(", ")
+		}
+		b.quoteIdentifier(col)
+	}
+	b.writeString(") AS (VALUES ")
+
+	for idx, row := range rows {
+		if idx > 0 {
+			b.writeString(", ")
+		}
+		b.writeByte('(')
+		for j := range rowColumns {
+			if j > 0 {
+				b.writeString(", ")
+			}
+			b.paramIndex++
+			if idx == 0 {
+				b.writeString("COALESCE((NULL::")
+				b.quoteTable(stmt.Schema, stmt.Table)
+				b.writeString(").")
+				b.quoteIdentifier(rowColumns[j])
+				b.writeString(", $")
+				b.writeString(strconv.Itoa(b.paramIndex))
+				b.writeByte(')')
+			} else {
+				b.writeByte('$')
+				b.writeString(strconv.Itoa(b.paramIndex))
+			}
+			b.argsBuffer = append(b.argsBuffer, row.Values[j])
+		}
+		b.writeByte(')')
+	}
+	b.writeString(") UPDATE ")
+	b.quoteTable(stmt.Schema, stmt.Table)
+	b.writeString(" SET ")
+	for i, col := range updateColumns {
+		if i > 0 {
+			b.writeString(", ")
+		}
+		b.quoteIdentifier(col)
+		b.writeString(" = \"$r\".")
+		b.quoteIdentifier(col)
+	}
+	b.writeString(" FROM \"$r\" WHERE ")
+	for i, col := range keyColumns {
+		if i > 0 {
+			b.writeString(" AND ")
+		}
+		b.quoteIdentifier(stmt.Table)
+		b.writeByte('.')
+		b.quoteIdentifier(col)
+		b.writeString(" = \"$r\".")
+		b.quoteIdentifier(col)
+	}
+
+	if len(stmt.Returning) > 0 {
+		b.writeString(" RETURNING ")
+		for i, col := range stmt.Returning {
+			if i > 0 {
+				b.writeString(", ")
+			}
+			b.quoteIdentifier(stmt.Table)
+			b.writeByte('.')
+			b.quoteIdentifier(col)
+		}
 	}
 
 	return b.sqlString(), b.argsBuffer
@@ -613,7 +697,7 @@ func (b *postgreSQLBackend) renderUpdate(stmt updateOp, setChunk, whereChunk [][
 // Query format: WITH keys AS (SELECT id FROM table WHERE FALSE UNION ALL VALUES ($1), ($2))
 //
 //	DELETE FROM table WHERE id IN (SELECT id FROM keys)
-func (b *postgreSQLBackend) renderDelete(stmt deleteOp, chunk [][]any) (string, []any) {
+func (b *postgreSQLBackend) renderDelete(stmt deleteRowsOp, chunk [][]any) (string, []any) {
 	b.paramIndex = 0
 	numKeyColumns := len(stmt.KeyColumns)
 	b.resetArgsBuffer(len(chunk) * numKeyColumns)
@@ -642,7 +726,7 @@ func (b *postgreSQLBackend) renderDelete(stmt deleteOp, chunk [][]any) (string, 
 			if idx == 0 {
 				// First row: use COALESCE to infer type from table schema
 				b.writeString("COALESCE((NULL::")
-				b.quoteTable(stmt.FromSchema, stmt.FromTable)
+				b.quoteTable(stmt.Schema, stmt.Table)
 				b.writeString(").")
 				b.quoteIdentifier(stmt.KeyColumns[j])
 				b.writeString(", $")
@@ -660,7 +744,7 @@ func (b *postgreSQLBackend) renderDelete(stmt deleteOp, chunk [][]any) (string, 
 	b.writeString(") ")
 
 	b.writeString("DELETE FROM ")
-	b.quoteTable(stmt.FromSchema, stmt.FromTable)
+	b.quoteTable(stmt.Schema, stmt.Table)
 	b.writeString(" WHERE ")
 
 	if numKeyColumns == 1 {
@@ -689,66 +773,281 @@ func (b *postgreSQLBackend) renderDelete(stmt deleteOp, chunk [][]any) (string, 
 	return b.sqlString(), b.argsBuffer
 }
 
-func (b *postgreSQLBackend) Select(ctx context.Context, stmt selectOp) (rows, error) {
-	if len(stmt.Keys) == 0 {
-		// Return empty result set for empty keys
-		return &emptyRows{}, nil
-	}
-	// Convert Keys to [][]any for rendering
-	values := make([][]any, len(stmt.Keys))
-	for i, k := range stmt.Keys {
-		values[i] = make([]any, k.Length())
-		for j := 0; j < k.Length(); j++ {
-			values[i][j] = k.At(j)
+func (b *postgreSQLBackend) renderSelectMissingChildren(stmt selectMissingChildrenOp, parentRows, keepRows [][]any) (string, []any) {
+	b.paramIndex = 0
+	b.resetArgsBuffer(len(parentRows)*len(stmt.ParentKeyColumns) + len(keepRows)*(len(stmt.ParentKeyColumns)+len(stmt.ChildKeyColumns)))
+	b.resetSQLBuffer(512)
+
+	b.writeString("WITH \"$p\" (")
+	for i := range stmt.ParentKeyColumns {
+		if i > 0 {
+			b.writeString(", ")
 		}
+		b.quoteIdentifier("p" + strconv.Itoa(i))
+	}
+	b.writeString(") AS (VALUES ")
+	for idx, row := range parentRows {
+		if idx > 0 {
+			b.writeString(", ")
+		}
+		b.writeByte('(')
+		for j := range stmt.ParentKeyColumns {
+			if j > 0 {
+				b.writeString(", ")
+			}
+			b.paramIndex++
+			if idx == 0 {
+				b.writeString("COALESCE((NULL::")
+				b.quoteTable(stmt.Schema, stmt.Table)
+				b.writeString(").")
+				b.quoteIdentifier(stmt.ParentKeyColumns[j])
+				b.writeString(", $")
+				b.writeString(strconv.Itoa(b.paramIndex))
+				b.writeByte(')')
+			} else {
+				b.writeByte('$')
+				b.writeString(strconv.Itoa(b.paramIndex))
+			}
+			b.argsBuffer = append(b.argsBuffer, row[j])
+		}
+		b.writeByte(')')
+	}
+	b.writeByte(')')
+
+	if len(keepRows) > 0 {
+		b.writeString(", \"$k\" (")
+		keepColumns := make([]string, 0, len(stmt.ParentKeyColumns)+len(stmt.ChildKeyColumns))
+		for i := range stmt.ParentKeyColumns {
+			keepColumns = append(keepColumns, "p"+strconv.Itoa(i))
+		}
+		for i := range stmt.ChildKeyColumns {
+			keepColumns = append(keepColumns, "c"+strconv.Itoa(i))
+		}
+		for i, alias := range keepColumns {
+			if i > 0 {
+				b.writeString(", ")
+			}
+			b.quoteIdentifier(alias)
+		}
+		b.writeString(") AS (VALUES ")
+		for idx, row := range keepRows {
+			if idx > 0 {
+				b.writeString(", ")
+			}
+			b.writeByte('(')
+			for j := range keepColumns {
+				if j > 0 {
+					b.writeString(", ")
+				}
+				b.paramIndex++
+				if idx == 0 {
+					col := ""
+					if j < len(stmt.ParentKeyColumns) {
+						col = stmt.ParentKeyColumns[j]
+					} else {
+						col = stmt.ChildKeyColumns[j-len(stmt.ParentKeyColumns)]
+					}
+					b.writeString("COALESCE((NULL::")
+					b.quoteTable(stmt.Schema, stmt.Table)
+					b.writeString(").")
+					b.quoteIdentifier(col)
+					b.writeString(", $")
+					b.writeString(strconv.Itoa(b.paramIndex))
+					b.writeByte(')')
+				} else {
+					b.writeByte('$')
+					b.writeString(strconv.Itoa(b.paramIndex))
+				}
+				b.argsBuffer = append(b.argsBuffer, row[j])
+			}
+			b.writeByte(')')
+		}
+		b.writeByte(')')
 	}
 
-	query, args := b.renderSelect(stmt, values)
-	return b.queryContext(ctx, query, args...)
+	b.writeString(" SELECT ")
+	for i, col := range stmt.ChildKeyColumns {
+		if i > 0 {
+			b.writeString(", ")
+		}
+		b.quoteIdentifier(stmt.Table)
+		b.writeByte('.')
+		b.quoteIdentifier(col)
+	}
+
+	b.writeString(" FROM ")
+	b.quoteTable(stmt.Schema, stmt.Table)
+	b.writeString(" JOIN \"$p\" ON ")
+	for i, col := range stmt.ParentKeyColumns {
+		if i > 0 {
+			b.writeString(" AND ")
+		}
+		b.quoteIdentifier(stmt.Table)
+		b.writeByte('.')
+		b.quoteIdentifier(col)
+		b.writeString(" = \"$p\".")
+		b.quoteIdentifier("p" + strconv.Itoa(i))
+	}
+
+	if len(keepRows) > 0 {
+		b.writeString(" LEFT JOIN \"$k\" ON ")
+		for i, col := range stmt.ParentKeyColumns {
+			if i > 0 {
+				b.writeString(" AND ")
+			}
+			b.quoteIdentifier(stmt.Table)
+			b.writeByte('.')
+			b.quoteIdentifier(col)
+			b.writeString(" = \"$k\".")
+			b.quoteIdentifier("p" + strconv.Itoa(i))
+		}
+		for i, col := range stmt.ChildKeyColumns {
+			if len(stmt.ParentKeyColumns)+i > 0 {
+				b.writeString(" AND ")
+			}
+			b.quoteIdentifier(stmt.Table)
+			b.writeByte('.')
+			b.quoteIdentifier(col)
+			b.writeString(" = \"$k\".")
+			b.quoteIdentifier("c" + strconv.Itoa(i))
+		}
+		b.writeString(" WHERE \"$k\".")
+		b.quoteIdentifier("c0")
+		b.writeString(" IS NULL")
+	}
+
+	return b.sqlString(), b.argsBuffer
 }
 
-func (b *postgreSQLBackend) Insert(ctx context.Context, stmt insertOp) (rows, error) {
-	if len(stmt.Values) == 0 {
-		// Return empty result set for empty batch
+func (b *postgreSQLBackend) LoadByKeys(ctx context.Context, op loadRowsOp) (rows, error) {
+	if len(op.Keys) == 0 {
 		return &emptyRows{}, nil
 	}
-	query, args := b.renderInsert(stmt, stmt.Values)
+
+	query, args := b.renderSelect(op, rowsFromKeys(op.Keys))
 	return b.queryContext(ctx, query, args...)
 }
 
-func (b *postgreSQLBackend) Upsert(ctx context.Context, stmt upsertOp) (rows, error) {
-	if len(stmt.Values) == 0 {
-		return &emptyRows{}, nil
+func (b *postgreSQLBackend) LoadByParentKeys(ctx context.Context, op loadRowsOp) (rows, error) {
+	return b.LoadByKeys(ctx, op)
+}
+
+func (b *postgreSQLBackend) SelectExistingKeys(ctx context.Context, op keyScanOp) ([]Key, error) {
+	if len(op.Keys) == 0 {
+		return nil, nil
 	}
-	query, args := b.renderUpsert(stmt, stmt.Values)
-	return b.queryContext(ctx, query, args...)
+
+	query, args := b.renderSelectExistingKeys(op, rowsFromKeys(op.Keys))
+	rowSet, err := b.queryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rowSet.Close() }()
+	return scanTypedKeys(rowSet, op.KeyTypes)
 }
 
-func (b *postgreSQLBackend) Update(ctx context.Context, stmt updateOp) error {
-	if len(stmt.SetValues) == 0 {
-		// No-op for empty batch
+func (b *postgreSQLBackend) InsertRows(ctx context.Context, op saveRowsOp, rows []plannedRow) ([]savedRow, error) {
+	if len(rows) == 0 {
+		return nil, nil
+	}
+
+	indexes, saveRows := splitPlannedRows(rows)
+	if len(op.generatedPrimaryFields()) > 0 {
+		return b.insertGeneratedRows(ctx, op, indexes, saveRows)
+	}
+
+	query, args := b.renderInsertRows(op, saveRows)
+	rowSet, err := b.queryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rowSet.Close() }()
+
+	saved, err := scanKeyedSavedRows(op, indexes, saveRows, rowSet)
+	if err != nil {
+		return nil, err
+	}
+	if len(saved) != len(rows) {
+		return nil, fmt.Errorf("%w: expected %d inserted rows, got %d", ErrConsistency, len(rows), len(saved))
+	}
+	return saved, nil
+}
+
+func (b *postgreSQLBackend) insertGeneratedRows(ctx context.Context, op saveRowsOp, indexes []int, rows []saveRow) ([]savedRow, error) {
+	if len(rows) == 0 {
+		return nil, nil
+	}
+	if len(op.generatedPrimaryFields()) == 0 {
+		return nil, fmt.Errorf("generated insert requires generated primary key fields")
+	}
+
+	query, args := b.renderGeneratedInsertRows(op, indexes, rows)
+	rowSet, err := b.queryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rowSet.Close() }()
+
+	saved, err := scanIndexedSavedRows(rowSet, len(op.Returning))
+	if err != nil {
+		return nil, err
+	}
+	if len(saved) != len(rows) {
+		return nil, fmt.Errorf("expected %d returned rows, got %d", len(rows), len(saved))
+	}
+	return saved, nil
+}
+
+func (b *postgreSQLBackend) UpdateRows(ctx context.Context, op saveRowsOp, rows []plannedRow) ([]savedRow, error) {
+	if len(rows) == 0 {
+		return nil, nil
+	}
+
+	indexes, saveRows := splitPlannedRows(rows)
+	query, args := b.renderUpdateRows(op, saveRows)
+	rowSet, err := b.queryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rowSet.Close() }()
+
+	saved, err := scanKeyedSavedRows(op, indexes, saveRows, rowSet)
+	if err != nil {
+		return nil, err
+	}
+	if len(saved) != len(rows) {
+		return nil, fmt.Errorf("%w: expected %d updated rows, got %d", ErrStaleEntity, len(rows), len(saved))
+	}
+	return saved, nil
+}
+
+func (b *postgreSQLBackend) SelectMissingChildren(ctx context.Context, op selectMissingChildrenOp) ([]Key, error) {
+	if len(op.ParentKeys) == 0 {
+		return nil, nil
+	}
+
+	parentRows := rowsFromKeys(op.ParentKeys)
+	keepRows := keepRowsFromPairs(op.KeepPairs)
+
+	query, args := b.renderSelectMissingChildren(op, parentRows, keepRows)
+	rowSet, err := b.queryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rowSet.Close() }()
+	return scanKeys(rowSet, len(op.ChildKeyColumns))
+}
+
+func (b *postgreSQLBackend) DeleteRowsByKeys(ctx context.Context, op deleteRowsOp) error {
+	return b.deleteRows(ctx, op)
+}
+
+func (b *postgreSQLBackend) deleteRows(ctx context.Context, op deleteRowsOp) error {
+	if len(op.Keys) == 0 {
 		return nil
 	}
-	query, args := b.renderUpdate(stmt, stmt.SetValues, stmt.WhereValues)
-	_, err := b.execContext(ctx, query, args...)
-	return err
-}
 
-func (b *postgreSQLBackend) Delete(ctx context.Context, stmt deleteOp) error {
-	if len(stmt.Keys) == 0 {
-		// No-op for empty batch
-		return nil
-	}
-	// Convert Keys to [][]any for rendering
-	values := make([][]any, len(stmt.Keys))
-	for i, k := range stmt.Keys {
-		values[i] = make([]any, k.Length())
-		for j := 0; j < k.Length(); j++ {
-			values[i][j] = k.At(j)
-		}
-	}
-
-	query, args := b.renderDelete(stmt, values)
+	query, args := b.renderDelete(op, rowsFromKeys(op.Keys))
 
 	_, err := b.execContext(ctx, query, args...)
 	return err

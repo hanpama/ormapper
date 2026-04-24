@@ -21,8 +21,10 @@
 //
 // Save semantics:
 //
-// Save treats the input as the authoritative aggregate snapshot. It upserts the
-// current aggregate graph and deletes children missing from the input value.
+// Save treats the input as the authoritative aggregate snapshot. It inserts rows
+// with new manual keys, updates rows with existing keys, and deletes children
+// missing from the input value. For auto primary keys, zero means insert and
+// non-zero means update.
 //
 // Example:
 //
@@ -58,3 +60,9 @@
 //	query := ormapper.NewQuery[Order](mapper, tx, "o")
 //	found, err := query.Where("o.total > ?", 0).FetchAll(ctx)
 package ormapper
+
+// Postgres renders PostgreSQL SQL.
+var Postgres Dialect = postgresDialect{}
+
+// SQLite renders SQLite SQL.
+var SQLite Dialect = sqliteDialect{}

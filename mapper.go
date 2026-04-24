@@ -9,15 +9,11 @@ import (
 // Mapper stores compiled mappings and executes aggregate persistence operations.
 type Mapper struct {
 	dialect  Dialect
-	mappings map[reflect.Type]*entityMapping
+	mappings mappingRegistry
 }
 
 func (m *Mapper) getMapping(entityType reflect.Type) (*entityMapping, error) {
-	mapping, ok := m.mappings[entityType]
-	if !ok {
-		return nil, fmt.Errorf("no mapping found for type %s", entityType)
-	}
-	return mapping, nil
+	return m.mappings.get(entityType)
 }
 
 // Get loads a single aggregate by primary key into dest.
@@ -39,8 +35,8 @@ func (m *Mapper) Get(ctx context.Context, db DBTX, dest any, id Key) error {
 		return err
 	}
 
-	u := newPersistenceOp(m, db)
-	entities, err := u.get(ctx, mapping, mapping.PrimaryColumns(), []Key{id})
+	u := newPersistence(m.mappings, m.dialect.newBackend(db))
+	entities, err := u.getByKeys(ctx, mapping, []Key{id})
 	if err != nil {
 		return err
 	}
@@ -54,10 +50,11 @@ func (m *Mapper) Get(ctx context.Context, db DBTX, dest any, id Key) error {
 	return nil
 }
 
-// Save upserts the aggregate and deletes children missing from the current snapshot.
+// Save persists the authoritative aggregate snapshot.
 //
 // Use Save with a full authoritative aggregate state. Omitted children are
-// treated as removed from the aggregate.
+// treated as removed from the aggregate. Auto primary keys use zero as insert
+// intent and non-zero as update intent.
 func (m *Mapper) Save(ctx context.Context, db DBTX, entity any) error {
 	entityType, err := unwrapEntityType(entity, "Save")
 	if err != nil {
@@ -69,7 +66,7 @@ func (m *Mapper) Save(ctx context.Context, db DBTX, entity any) error {
 		return err
 	}
 
-	_, err = newPersistenceOp(m, db).save(ctx, mapping, []any{entity})
+	_, err = newPersistence(m.mappings, m.dialect.newBackend(db)).save(ctx, mapping, []any{entity})
 	return err
 }
 
@@ -87,16 +84,8 @@ func (m *Mapper) Delete(ctx context.Context, db DBTX, entity any) error {
 		return err
 	}
 
-	u := newPersistenceOp(m, db)
+	u := newPersistence(m.mappings, m.dialect.newBackend(db))
 	key := mapping.ExtractKey(entity, mapping.PrimaryKey)
-	existing, err := u.existingKeysByKeys(ctx, mapping, []Key{key})
-	if err != nil {
-		return err
-	}
-	if len(existing) == 0 {
-		return nil
-	}
-
 	return u.deleteByKeys(ctx, mapping, []Key{key})
 }
 

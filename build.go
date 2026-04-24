@@ -11,8 +11,8 @@ type entityMetadata struct {
 func buildEntityMappings(
 	meta map[reflect.Type]entityMetadata,
 	registered map[reflect.Type]bool,
-) map[reflect.Type]*entityMapping {
-	result := make(map[reflect.Type]*entityMapping, len(meta))
+) mappingRegistry {
+	result := make(mappingRegistry, len(meta))
 
 	for entityType, entityMeta := range meta {
 		mapping := buildSingleMapping(entityType, entityMeta, registered)
@@ -30,6 +30,7 @@ func buildSingleMapping(
 ) *entityMapping {
 	fieldMap := make(map[string]*field)
 	childMap := make(map[string]*child)
+	childFields := []string{}
 	allFields := []string{}
 	primaryKey := []string{}
 	parentalKey := []string{}
@@ -92,6 +93,7 @@ func buildSingleMapping(
 				FieldIndex: metadata.FieldIndex,
 			}
 			childMap[fieldName] = &child
+			childFields = append(childFields, fieldName)
 			continue
 		}
 
@@ -159,6 +161,7 @@ func buildSingleMapping(
 		entityMeta.Table,
 		fieldMap,
 		childMap,
+		childFields,
 		allFields,
 		primaryKey,
 		parentalKey,

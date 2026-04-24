@@ -11,6 +11,16 @@ type field struct {
 	FieldIndex int // Index of the field in the struct for direct reflect access
 }
 
+type saveField struct {
+	Name       string
+	Column     string
+	Type       reflect.Type
+	PrimaryKey bool
+	Generated  bool
+	Insertable bool
+	Updatable  bool
+}
+
 func (f *field) GetPtr(entityPtr any) any {
 	return getFieldPtr(entityPtr, f.FieldIndex)
 }
@@ -60,6 +70,7 @@ type entityMapping struct {
 	Table       string
 	FieldMap    map[string]*field
 	ChildMap    map[string]*child
+	ChildFields []string
 	AllFields   []string
 	PrimaryKey  []string
 	ParentalKey []string
@@ -76,6 +87,8 @@ type entityMapping struct {
 
 	// Pre-computed field name lists for RETURNING operations
 	insertReturning []string
+	saveFields      []string
+	saveFieldSet    []saveField
 }
 
 func newEntityMapping(
@@ -84,6 +97,7 @@ func newEntityMapping(
 	table string,
 	fieldMap map[string]*field,
 	childMap map[string]*child,
+	childFields []string,
 	allFields []string,
 	primaryKey []string,
 	parentalKey []string,
@@ -96,6 +110,7 @@ func newEntityMapping(
 		Table:       table,
 		FieldMap:    fieldMap,
 		ChildMap:    childMap,
+		ChildFields: childFields,
 		AllFields:   allFields,
 		PrimaryKey:  primaryKey,
 		ParentalKey: parentalKey,
@@ -109,6 +124,19 @@ func newEntityMapping(
 	em.insertableColumns = computeColumns(insertable, fieldMap)
 	em.updatableColumns = computeColumns(updatable, fieldMap)
 	em.insertReturningColumns = computeInsertReturning(allFields, insertable, primaryKey, fieldMap)
+	em.saveFields = uniqueFieldNames(insertable, primaryKey, updatable)
+	em.saveFieldSet = make([]saveField, 0, len(em.saveFields))
+	for _, name := range em.saveFields {
+		em.saveFieldSet = append(em.saveFieldSet, saveField{
+			Name:       name,
+			Column:     fieldMap[name].Column,
+			Type:       fieldMap[name].Type,
+			PrimaryKey: containsField(primaryKey, name),
+			Generated:  !containsField(insertable, name),
+			Insertable: containsField(insertable, name),
+			Updatable:  containsField(updatable, name),
+		})
+	}
 
 	// Compute field names for INSERT RETURNING (primary key + auto fields)
 	insertReturningSet := make(map[string]bool)
@@ -158,6 +186,20 @@ func (em *entityMapping) InsertReturningColumns() []string { return em.insertRet
 // These correspond to InsertReturningColumns but as field names, not column names.
 func (em *entityMapping) InsertReturning() []string { return em.insertReturning }
 
+// SaveFields returns field names used by save planning.
+func (em *entityMapping) SaveFields() []string { return em.saveFields }
+
+// SaveFieldSet returns persistence metadata for each Save field.
+func (em *entityMapping) SaveFieldSet() []saveField { return em.saveFieldSet }
+
+func (em *entityMapping) fieldTypes(fieldNames []string) []reflect.Type {
+	types := make([]reflect.Type, len(fieldNames))
+	for i, name := range fieldNames {
+		types[i] = em.FieldMap[name].Type
+	}
+	return types
+}
+
 func (em *entityMapping) allPrimaryKeyGenerated() bool {
 	for _, name := range em.PrimaryKey {
 		if containsField(em.Insertable, name) {
@@ -165,14 +207,6 @@ func (em *entityMapping) allPrimaryKeyGenerated() bool {
 		}
 	}
 	return len(em.PrimaryKey) > 0
-}
-
-func (em *entityMapping) upsertFields() []string {
-	return uniqueFieldNames(em.Insertable, em.PrimaryKey, em.Updatable)
-}
-
-func (em *entityMapping) upsertColumns() []string {
-	return computeColumns(em.upsertFields(), em.FieldMap)
 }
 
 func (em *entityMapping) primaryKeyIsZero(entity any) bool {
@@ -192,6 +226,25 @@ func containsField(fields []string, name string) bool {
 		}
 	}
 	return false
+}
+
+func uniqueFieldNames(groups ...[]string) []string {
+	total := 0
+	for _, group := range groups {
+		total += len(group)
+	}
+	result := make([]string, 0, total)
+	seen := make(map[string]struct{}, total)
+	for _, group := range groups {
+		for _, name := range group {
+			if _, ok := seen[name]; ok {
+				continue
+			}
+			seen[name] = struct{}{}
+			result = append(result, name)
+		}
+	}
+	return result
 }
 
 func computeColumns(fieldNames []string, fieldMap map[string]*field) []string {
@@ -278,7 +331,22 @@ func getFieldValue(structPtr any, fieldIndex int) any {
 // value is the new value to set.
 func setFieldValue(structPtr any, fieldIndex int, value any) {
 	sv := reflect.ValueOf(structPtr).Elem()
-	sv.Field(fieldIndex).Set(reflect.ValueOf(value))
+	field := sv.Field(fieldIndex)
+	if value == nil {
+		field.Set(reflect.Zero(field.Type()))
+		return
+	}
+
+	v := reflect.ValueOf(value)
+	if v.Type().AssignableTo(field.Type()) {
+		field.Set(v)
+		return
+	}
+	if v.Type().ConvertibleTo(field.Type()) {
+		field.Set(v.Convert(field.Type()))
+		return
+	}
+	field.Set(v)
 }
 
 // getPtrFieldValue returns the value of a pointer field (*T) using reflect.

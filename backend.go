@@ -14,6 +14,12 @@ type DBTX interface {
 	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
 }
 
+// Dialect selects the SQL dialect used by a Mapper.
+// Use one of the built-in values such as Postgres or SQLite.
+type Dialect interface {
+	newBackend(db DBTX) backend
+}
+
 type rows interface {
 	Next() bool
 	Scan(dest ...any) error
@@ -29,29 +35,13 @@ func (e *emptyRows) Close() error               { return nil }
 func (e *emptyRows) Columns() ([]string, error) { return nil, nil }
 
 type backend interface {
-	Select(ctx context.Context, op selectOp) (rows, error)
-	Insert(ctx context.Context, op insertOp) (rows, error)
-	Upsert(ctx context.Context, op upsertOp) (rows, error)
-	Update(ctx context.Context, op updateOp) error
-	Delete(ctx context.Context, op deleteOp) error
+	LoadByKeys(ctx context.Context, op loadRowsOp) (rows, error)
+	LoadByParentKeys(ctx context.Context, op loadRowsOp) (rows, error)
+	SelectExistingKeys(ctx context.Context, op keyScanOp) ([]Key, error)
+	InsertRows(ctx context.Context, op saveRowsOp, rows []plannedRow) ([]savedRow, error)
+	UpdateRows(ctx context.Context, op saveRowsOp, rows []plannedRow) ([]savedRow, error)
+	SelectMissingChildren(ctx context.Context, op selectMissingChildrenOp) ([]Key, error)
+	DeleteRowsByKeys(ctx context.Context, op deleteRowsOp) error
 	FetchQuery(ctx context.Context, stmt sqlQuery) (rows, error)
 	CountQuery(ctx context.Context, stmt sqlQuery) (int64, error)
 }
-
-// Dialect selects the SQL dialect used by a Mapper.
-// Use one of the built-in values such as Postgres or SQLite.
-type Dialect interface {
-	newBackend(db DBTX) backend
-}
-
-type postgresDialect struct{}
-type sqliteDialect struct{}
-
-// Postgres renders PostgreSQL SQL.
-var Postgres Dialect = postgresDialect{}
-
-// SQLite renders SQLite SQL.
-var SQLite Dialect = sqliteDialect{}
-
-func (postgresDialect) newBackend(db DBTX) backend { return newPostgreSQLBackend(db) }
-func (sqliteDialect) newBackend(db DBTX) backend   { return newSQLiteBackend(db) }

@@ -53,3 +53,14 @@ type orderNote struct {
 	OrderID int64 `ormapper:"parental"`
 	Body    string
 }
+
+type identifyingRoot struct {
+	ID     int64 `ormapper:"auto"`
+	Name   string
+	Detail *identifyingDetail
+}
+
+type identifyingDetail struct {
+	RootID int64 `ormapper:"primary,parental"`
+	Body   string
+}

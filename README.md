@@ -8,8 +8,10 @@
 - use `NewQuery` for typed reads
 
 `Save` treats the input value as the authoritative aggregate snapshot. It
-upserts the current aggregate graph and deletes children missing from the input
-value.
+inserts rows with new manual keys, updates rows with existing keys, and deletes
+children missing from the input value. For `ormapper:"auto"` primary keys, zero
+means insert and non-zero means update; a non-zero generated key missing from the
+database is a stale entity error.
 
 ```go
 type Order struct {

@@ -4,14 +4,21 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strconv"
 )
+
+type sqliteDialect struct{}
+
+func (sqliteDialect) newBackend(db DBTX) backend { return newSQLiteBackend(db) }
 
 // sqliteBackend implements backend for SQLite databases.
 type sqliteBackend struct {
-	db         DBTX
-	paramIndex int
-	argsBuffer []any  // Reusable buffer for query parameters
-	sqlBuffer  []byte // Reusable buffer for SQL generation
+	db                      DBTX
+	paramIndex              int
+	argsBuffer              []any  // Reusable buffer for query parameters
+	sqlBuffer               []byte // Reusable buffer for SQL generation
+	sqliteSequenceChecked   bool
+	sqliteSequenceAvailable bool
 }
 
 // newSQLiteBackend creates a new SQLite backend.
@@ -81,6 +88,20 @@ func (b *sqliteBackend) execContext(ctx context.Context, query string, args ...a
 // queryRowContext executes a query that returns at most one row using the provided database handle.
 func (b *sqliteBackend) queryRowContext(ctx context.Context, query string, args ...any) *sql.Row {
 	return b.db.QueryRowContext(ctx, query, args...)
+}
+
+func (b *sqliteBackend) hasSQLiteSequence(ctx context.Context) (bool, error) {
+	if b.sqliteSequenceChecked {
+		return b.sqliteSequenceAvailable, nil
+	}
+
+	var exists int
+	if err := b.queryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'sqlite_sequence')`).Scan(&exists); err != nil {
+		return false, err
+	}
+	b.sqliteSequenceChecked = true
+	b.sqliteSequenceAvailable = exists != 0
+	return b.sqliteSequenceAvailable, nil
 }
 
 func (b *sqliteBackend) renderSQL(sql sqlNode, args *[]any) {
@@ -234,7 +255,7 @@ func (b *sqliteBackend) renderSQLQuery(stmt sqlQuery) (string, []any) {
 
 // renderSelect renders a CTE-based SELECT with JOIN pattern
 // Query format: WITH keys (col1, col2) AS (VALUES (?,?), (?,?)) SELECT table.col1, table.col2 FROM table JOIN keys ON ...
-func (b *sqliteBackend) renderSelect(stmt selectOp, chunk [][]any) (string, []any) {
+func (b *sqliteBackend) renderSelect(stmt loadRowsOp, chunk [][]any) (string, []any) {
 	b.paramIndex = 0
 	numKeyColumns := len(stmt.KeyColumns)
 	b.resetArgsBuffer(len(chunk) * numKeyColumns)
@@ -272,20 +293,20 @@ func (b *sqliteBackend) renderSelect(stmt selectOp, chunk [][]any) (string, []an
 		if i > 0 {
 			b.writeString(", ")
 		}
-		b.quoteIdentifier(stmt.FromTable)
+		b.quoteIdentifier(stmt.Table)
 		b.writeByte('.')
 		b.quoteIdentifier(col)
 	}
 
 	b.writeString(" FROM ")
-	b.quoteIdentifier(stmt.FromTable)
+	b.quoteIdentifier(stmt.Table)
 
 	b.writeString(" JOIN keys ON ")
 	for j := range stmt.KeyColumns {
 		if j > 0 {
 			b.writeString(" AND ")
 		}
-		b.quoteIdentifier(stmt.FromTable)
+		b.quoteIdentifier(stmt.Table)
 		b.writeByte('.')
 		b.quoteIdentifier(stmt.KeyColumns[j])
 		b.writeString(" = keys.")
@@ -295,17 +316,14 @@ func (b *sqliteBackend) renderSelect(stmt selectOp, chunk [][]any) (string, []an
 	return b.sqlString(), b.argsBuffer
 }
 
-// renderInsert renders a CTE-based INSERT SELECT pattern with RETURNING
-// Query format: WITH new_rows (col1, col2) AS (VALUES (?,?), (?,?)) INSERT INTO table SELECT ... FROM new_rows RETURNING ...
-func (b *sqliteBackend) renderInsert(stmt insertOp, chunk [][]any) (string, []any) {
+func (b *sqliteBackend) renderSelectExistingKeys(stmt keyScanOp, chunk [][]any) (string, []any) {
 	b.paramIndex = 0
-	numColumns := len(stmt.Insert)
-	b.resetArgsBuffer(len(chunk) * numColumns)
-
+	numKeyColumns := len(stmt.KeyColumns)
+	b.resetArgsBuffer(len(chunk) * numKeyColumns)
 	b.resetSQLBuffer(512)
 
-	b.writeString("WITH new_rows (")
-	for i, col := range stmt.Insert {
+	b.writeString("WITH keys (")
+	for i, col := range stmt.KeyColumns {
 		if i > 0 {
 			b.writeString(", ")
 		}
@@ -318,7 +336,7 @@ func (b *sqliteBackend) renderInsert(stmt insertOp, chunk [][]any) (string, []an
 			b.writeString(", ")
 		}
 		b.writeByte('(')
-		for j := range stmt.Insert {
+		for j := range stmt.KeyColumns {
 			if j > 0 {
 				b.writeString(", ")
 			}
@@ -330,17 +348,182 @@ func (b *sqliteBackend) renderInsert(stmt insertOp, chunk [][]any) (string, []an
 	}
 	b.writeString(") ")
 
-	b.writeString("INSERT INTO ")
-	b.quoteIdentifier(stmt.IntoTable)
+	b.writeString("SELECT ")
+	for i, col := range stmt.KeyColumns {
+		if i > 0 {
+			b.writeString(", ")
+		}
+		b.writeString("keys.")
+		b.quoteIdentifier(col)
+	}
+
+	b.writeString(" FROM keys JOIN ")
+	b.quoteIdentifier(stmt.Table)
+	b.writeString(" ON ")
+	for i, col := range stmt.KeyColumns {
+		if i > 0 {
+			b.writeString(" AND ")
+		}
+		b.quoteIdentifier(stmt.Table)
+		b.writeByte('.')
+		b.quoteIdentifier(col)
+		b.writeString(" = keys.")
+		b.quoteIdentifier(col)
+	}
+
+	return b.sqlString(), b.argsBuffer
+}
+
+func (b *sqliteBackend) renderGeneratedInsertRows(stmt saveRowsOp, indexes []int, rows []saveRow, useSQLiteSequence bool) (string, []any, error) {
+	generatedPrimaryFields := stmt.generatedPrimaryFields()
+	if len(generatedPrimaryFields) != 1 {
+		return "", nil, fmt.Errorf("sqlite generated insert correlation requires one generated primary key")
+	}
+
+	b.paramIndex = 0
+	insertColumns := stmt.insertColumns()
+	extraArgs := 0
+	if useSQLiteSequence {
+		extraArgs = 1
+	}
+	b.resetArgsBuffer(len(rows)*len(insertColumns) + extraArgs)
+	b.resetSQLBuffer(768)
+
+	b.writeString("WITH new_rows (")
+	b.quoteIdentifier("$i")
+	for _, col := range insertColumns {
+		b.writeString(", ")
+		b.quoteIdentifier(col)
+	}
+	b.writeString(") AS (VALUES ")
+
+	for idx, row := range rows {
+		if idx > 0 {
+			b.writeString(", ")
+		}
+		b.writeByte('(')
+		b.writeString(strconv.Itoa(indexes[idx]))
+		values := stmt.insertValuesForRow(row)
+		for _, val := range values {
+			b.writeString(", ")
+			b.writeByte('?')
+			b.paramIndex++
+			b.argsBuffer = append(b.argsBuffer, val)
+		}
+		b.writeByte(')')
+	}
+	b.writeByte(')')
+
+	generatedColumn := generatedPrimaryFields[0].Column
+	b.writeString(", base (")
+	b.quoteIdentifier("$base")
+	b.writeString(") AS (SELECT ")
+	if useSQLiteSequence {
+		b.writeString("MAX(COALESCE((SELECT seq FROM sqlite_sequence WHERE name = ?), 0), COALESCE((SELECT MAX(")
+		b.quoteIdentifier(generatedColumn)
+		b.writeString(") FROM ")
+		b.quoteIdentifier(stmt.Table)
+		b.writeString("), 0))")
+		b.argsBuffer = append(b.argsBuffer, stmt.Table)
+	} else {
+		b.writeString("COALESCE(MAX(")
+		b.quoteIdentifier(generatedColumn)
+		b.writeString("), 0) FROM ")
+		b.quoteIdentifier(stmt.Table)
+	}
+	b.writeByte(')')
+
+	b.writeString(", allocated AS (SELECT ")
+	b.quoteIdentifier("$i")
+	b.writeString(", ")
+	b.quoteIdentifier("$base")
+	b.writeString(" + ROW_NUMBER() OVER (ORDER BY ")
+	b.quoteIdentifier("$i")
+	b.writeString(") AS ")
+	b.quoteIdentifier(generatedColumn)
+	for _, col := range insertColumns {
+		b.writeString(", ")
+		b.quoteIdentifier(col)
+	}
+	b.writeString(" FROM new_rows CROSS JOIN base)")
+
+	b.writeString(" INSERT INTO ")
+	b.quoteIdentifier(stmt.Table)
 	b.writeString(" (")
-	for i, col := range stmt.Insert {
+	insertWithGenerated := stmt.insertColumnsWithGeneratedPrimary()
+	for i, col := range insertWithGenerated {
 		if i > 0 {
 			b.writeString(", ")
 		}
 		b.quoteIdentifier(col)
 	}
 	b.writeString(") SELECT ")
-	for i, col := range stmt.Insert {
+	for i, col := range insertWithGenerated {
+		if i > 0 {
+			b.writeString(", ")
+		}
+		b.quoteIdentifier(col)
+	}
+	b.writeString(" FROM allocated ORDER BY ")
+	b.quoteIdentifier("$i")
+
+	if len(stmt.Returning) > 0 {
+		b.writeString(" RETURNING ")
+		for i, col := range stmt.Returning {
+			if i > 0 {
+				b.writeString(", ")
+			}
+			b.quoteIdentifier(col)
+		}
+	}
+
+	return b.sqlString(), b.argsBuffer, nil
+}
+
+func (b *sqliteBackend) renderInsertRows(stmt saveRowsOp, rows []saveRow) (string, []any) {
+	b.paramIndex = 0
+	insertColumns := stmt.insertColumns()
+	b.resetArgsBuffer(len(rows) * len(insertColumns))
+	b.resetSQLBuffer(512)
+
+	b.writeString("WITH new_rows (")
+	for i, col := range insertColumns {
+		if i > 0 {
+			b.writeString(", ")
+		}
+		b.quoteIdentifier(col)
+	}
+	b.writeString(") AS (VALUES ")
+
+	for idx, row := range rows {
+		if idx > 0 {
+			b.writeString(", ")
+		}
+		b.writeByte('(')
+		values := stmt.insertValuesForRow(row)
+		for j, val := range values {
+			if j > 0 {
+				b.writeString(", ")
+			}
+			b.writeByte('?')
+			b.paramIndex++
+			b.argsBuffer = append(b.argsBuffer, val)
+		}
+		b.writeByte(')')
+	}
+	b.writeString(") ")
+
+	b.writeString("INSERT INTO ")
+	b.quoteIdentifier(stmt.Table)
+	b.writeString(" (")
+	for i, col := range insertColumns {
+		if i > 0 {
+			b.writeString(", ")
+		}
+		b.quoteIdentifier(col)
+	}
+	b.writeString(") SELECT ")
+	for i, col := range insertColumns {
 		if i > 0 {
 			b.writeString(", ")
 		}
@@ -361,15 +544,19 @@ func (b *sqliteBackend) renderInsert(stmt insertOp, chunk [][]any) (string, []an
 	return b.sqlString(), b.argsBuffer
 }
 
-func (b *sqliteBackend) renderUpsert(stmt upsertOp, chunk [][]any) (string, []any) {
+func (b *sqliteBackend) renderUpdateRows(stmt saveRowsOp, rows []saveRow) (string, []any) {
 	b.paramIndex = 0
-	numColumns := len(stmt.Insert)
-	b.resetArgsBuffer(len(chunk) * numColumns)
-
+	rowColumns := stmt.rowColumns()
+	keyColumns := stmt.conflictColumns()
+	updateColumns := stmt.updateColumns()
+	if len(updateColumns) == 0 {
+		updateColumns = keyColumns[:1]
+	}
+	b.resetArgsBuffer(len(rows) * len(rowColumns))
 	b.resetSQLBuffer(512)
 
 	b.writeString("WITH new_rows (")
-	for i, col := range stmt.Insert {
+	for i, col := range rowColumns {
 		if i > 0 {
 			b.writeString(", ")
 		}
@@ -377,60 +564,41 @@ func (b *sqliteBackend) renderUpsert(stmt upsertOp, chunk [][]any) (string, []an
 	}
 	b.writeString(") AS (VALUES ")
 
-	for idx, row := range chunk {
+	for idx, row := range rows {
 		if idx > 0 {
 			b.writeString(", ")
 		}
 		b.writeByte('(')
-		for j := range stmt.Insert {
+		for j := range rowColumns {
 			if j > 0 {
 				b.writeString(", ")
 			}
 			b.writeByte('?')
 			b.paramIndex++
-			b.argsBuffer = append(b.argsBuffer, row[j])
+			b.argsBuffer = append(b.argsBuffer, row.Values[j])
 		}
 		b.writeByte(')')
 	}
-	b.writeString(") ")
-
-	b.writeString("INSERT INTO ")
-	b.quoteIdentifier(stmt.IntoTable)
-	b.writeString(" (")
-	for i, col := range stmt.Insert {
+	b.writeString(") UPDATE ")
+	b.quoteIdentifier(stmt.Table)
+	b.writeString(" SET ")
+	for i, col := range updateColumns {
 		if i > 0 {
 			b.writeString(", ")
 		}
 		b.quoteIdentifier(col)
-	}
-	b.writeString(") SELECT ")
-	for i, col := range stmt.Insert {
-		if i > 0 {
-			b.writeString(", ")
-		}
+		b.writeString(" = new_rows.")
 		b.quoteIdentifier(col)
 	}
-	b.writeString(" FROM new_rows WHERE true")
-
-	b.writeString(" ON CONFLICT (")
-	for i, col := range stmt.Conflict {
+	b.writeString(" FROM new_rows WHERE ")
+	for i, col := range keyColumns {
 		if i > 0 {
-			b.writeString(", ")
+			b.writeString(" AND ")
 		}
+		b.quoteIdentifier(stmt.Table)
+		b.writeByte('.')
 		b.quoteIdentifier(col)
-	}
-	b.writeString(") DO UPDATE SET ")
-
-	updateCols := stmt.Update
-	if len(updateCols) == 0 {
-		updateCols = stmt.Conflict[:1]
-	}
-	for i, col := range updateCols {
-		if i > 0 {
-			b.writeString(", ")
-		}
-		b.quoteIdentifier(col)
-		b.writeString(" = excluded.")
+		b.writeString(" = new_rows.")
 		b.quoteIdentifier(col)
 	}
 
@@ -447,86 +615,9 @@ func (b *sqliteBackend) renderUpsert(stmt upsertOp, chunk [][]any) (string, []an
 	return b.sqlString(), b.argsBuffer
 }
 
-// renderUpdate renders a CTE-based UPDATE FROM pattern
-// Query format: WITH new_values (id, name, email) AS (VALUES (?,?,?), (?,?,?))
-//
-//	UPDATE table SET name = new_values.name FROM new_values WHERE table.id = new_values.id
-func (b *sqliteBackend) renderUpdate(stmt updateOp, setChunk, whereChunk [][]any) (string, []any) {
-	b.paramIndex = 0
-
-	numColumns := len(stmt.Sets) + len(stmt.Where)
-	b.resetArgsBuffer(len(setChunk) * numColumns)
-
-	b.resetSQLBuffer(512)
-
-	b.writeString("WITH new_values (")
-	for i, col := range stmt.Sets {
-		if i > 0 {
-			b.writeString(", ")
-		}
-		b.quoteIdentifier(col)
-	}
-	for _, col := range stmt.Where {
-		b.writeString(", ")
-		b.quoteIdentifier(col)
-	}
-	b.writeString(") AS (VALUES ")
-
-	for idx := range setChunk {
-		if idx > 0 {
-			b.writeString(", ")
-		}
-		b.writeByte('(')
-		for j, val := range setChunk[idx] {
-			if j > 0 {
-				b.writeString(", ")
-			}
-			b.writeByte('?')
-			b.paramIndex++
-			b.argsBuffer = append(b.argsBuffer, val)
-		}
-		for _, val := range whereChunk[idx] {
-			b.writeString(", ")
-			b.writeByte('?')
-			b.paramIndex++
-			b.argsBuffer = append(b.argsBuffer, val)
-		}
-		b.writeByte(')')
-	}
-	b.writeString(") ")
-
-	b.writeString("UPDATE ")
-	b.quoteIdentifier(stmt.Table)
-	b.writeString(" SET ")
-	for i, col := range stmt.Sets {
-		if i > 0 {
-			b.writeString(", ")
-		}
-		b.quoteIdentifier(col)
-		b.writeString(" = new_values.")
-		b.quoteIdentifier(col)
-	}
-
-	b.writeString(" FROM new_values")
-
-	b.writeString(" WHERE ")
-	for i, col := range stmt.Where {
-		if i > 0 {
-			b.writeString(" AND ")
-		}
-		b.quoteIdentifier(stmt.Table)
-		b.writeByte('.')
-		b.quoteIdentifier(col)
-		b.writeString(" = new_values.")
-		b.quoteIdentifier(col)
-	}
-
-	return b.sqlString(), b.argsBuffer
-}
-
 // renderDelete renders a CTE-based DELETE with subquery pattern
 // Query format: WITH keys (id) AS (VALUES (?), (?)) DELETE FROM table WHERE id IN (SELECT id FROM keys)
-func (b *sqliteBackend) renderDelete(stmt deleteOp, chunk [][]any) (string, []any) {
+func (b *sqliteBackend) renderDelete(stmt deleteRowsOp, chunk [][]any) (string, []any) {
 	b.paramIndex = 0
 	numKeyColumns := len(stmt.KeyColumns)
 	b.resetArgsBuffer(len(chunk) * numKeyColumns)
@@ -560,7 +651,7 @@ func (b *sqliteBackend) renderDelete(stmt deleteOp, chunk [][]any) (string, []an
 	b.writeString(") ")
 
 	b.writeString("DELETE FROM ")
-	b.quoteIdentifier(stmt.FromTable)
+	b.quoteIdentifier(stmt.Table)
 	b.writeString(" WHERE ")
 
 	if numKeyColumns == 1 {
@@ -589,66 +680,258 @@ func (b *sqliteBackend) renderDelete(stmt deleteOp, chunk [][]any) (string, []an
 	return b.sqlString(), b.argsBuffer
 }
 
-func (b *sqliteBackend) Select(ctx context.Context, stmt selectOp) (rows, error) {
-	if len(stmt.Keys) == 0 {
-		// Return empty result set for empty keys
-		return &emptyRows{}, nil
-	}
-	// Convert Keys to [][]any for rendering
-	values := make([][]any, len(stmt.Keys))
-	for i, k := range stmt.Keys {
-		values[i] = make([]any, k.Length())
-		for j := 0; j < k.Length(); j++ {
-			values[i][j] = k.At(j)
+func (b *sqliteBackend) renderSelectMissingChildren(stmt selectMissingChildrenOp, parentRows, keepRows [][]any) (string, []any) {
+	b.paramIndex = 0
+	b.resetArgsBuffer(len(parentRows)*len(stmt.ParentKeyColumns) + len(keepRows)*(len(stmt.ParentKeyColumns)+len(stmt.ChildKeyColumns)))
+	b.resetSQLBuffer(512)
+
+	b.writeString("WITH parent_rows (")
+	for i := range stmt.ParentKeyColumns {
+		if i > 0 {
+			b.writeString(", ")
 		}
+		b.quoteIdentifier("p" + strconv.Itoa(i))
+	}
+	b.writeString(") AS (VALUES ")
+	for idx, row := range parentRows {
+		if idx > 0 {
+			b.writeString(", ")
+		}
+		b.writeByte('(')
+		for j := range stmt.ParentKeyColumns {
+			if j > 0 {
+				b.writeString(", ")
+			}
+			b.writeByte('?')
+			b.paramIndex++
+			b.argsBuffer = append(b.argsBuffer, row[j])
+		}
+		b.writeByte(')')
+	}
+	b.writeByte(')')
+
+	if len(keepRows) > 0 {
+		b.writeString(", keep_rows (")
+		keepColumns := make([]string, 0, len(stmt.ParentKeyColumns)+len(stmt.ChildKeyColumns))
+		for i := range stmt.ParentKeyColumns {
+			keepColumns = append(keepColumns, "p"+strconv.Itoa(i))
+		}
+		for i := range stmt.ChildKeyColumns {
+			keepColumns = append(keepColumns, "c"+strconv.Itoa(i))
+		}
+		for i, alias := range keepColumns {
+			if i > 0 {
+				b.writeString(", ")
+			}
+			b.quoteIdentifier(alias)
+		}
+		b.writeString(") AS (VALUES ")
+		for idx, row := range keepRows {
+			if idx > 0 {
+				b.writeString(", ")
+			}
+			b.writeByte('(')
+			for j := range keepColumns {
+				if j > 0 {
+					b.writeString(", ")
+				}
+				b.writeByte('?')
+				b.paramIndex++
+				b.argsBuffer = append(b.argsBuffer, row[j])
+			}
+			b.writeByte(')')
+		}
+		b.writeByte(')')
 	}
 
-	query, args := b.renderSelect(stmt, values)
-	return b.queryContext(ctx, query, args...)
+	b.writeString(" SELECT ")
+	for i, col := range stmt.ChildKeyColumns {
+		if i > 0 {
+			b.writeString(", ")
+		}
+		b.quoteIdentifier(stmt.Table)
+		b.writeByte('.')
+		b.quoteIdentifier(col)
+	}
+
+	b.writeString(" FROM ")
+	b.quoteIdentifier(stmt.Table)
+	b.writeString(" JOIN parent_rows ON ")
+	for i, col := range stmt.ParentKeyColumns {
+		if i > 0 {
+			b.writeString(" AND ")
+		}
+		b.quoteIdentifier(stmt.Table)
+		b.writeByte('.')
+		b.quoteIdentifier(col)
+		b.writeString(" = parent_rows.")
+		b.quoteIdentifier("p" + strconv.Itoa(i))
+	}
+
+	if len(keepRows) > 0 {
+		b.writeString(" LEFT JOIN keep_rows ON ")
+		for i, col := range stmt.ParentKeyColumns {
+			if i > 0 {
+				b.writeString(" AND ")
+			}
+			b.quoteIdentifier(stmt.Table)
+			b.writeByte('.')
+			b.quoteIdentifier(col)
+			b.writeString(" = keep_rows.")
+			b.quoteIdentifier("p" + strconv.Itoa(i))
+		}
+		for i, col := range stmt.ChildKeyColumns {
+			if len(stmt.ParentKeyColumns)+i > 0 {
+				b.writeString(" AND ")
+			}
+			b.quoteIdentifier(stmt.Table)
+			b.writeByte('.')
+			b.quoteIdentifier(col)
+			b.writeString(" = keep_rows.")
+			b.quoteIdentifier("c" + strconv.Itoa(i))
+		}
+		b.writeString(" WHERE keep_rows.")
+		b.quoteIdentifier("c0")
+		b.writeString(" IS NULL")
+	}
+
+	return b.sqlString(), b.argsBuffer
 }
 
-func (b *sqliteBackend) Insert(ctx context.Context, stmt insertOp) (rows, error) {
-	if len(stmt.Values) == 0 {
-		// Return empty result set for empty batch
+func (b *sqliteBackend) LoadByKeys(ctx context.Context, op loadRowsOp) (rows, error) {
+	if len(op.Keys) == 0 {
 		return &emptyRows{}, nil
 	}
-	query, args := b.renderInsert(stmt, stmt.Values)
+
+	query, args := b.renderSelect(op, rowsFromKeys(op.Keys))
 	return b.queryContext(ctx, query, args...)
 }
 
-func (b *sqliteBackend) Upsert(ctx context.Context, stmt upsertOp) (rows, error) {
-	if len(stmt.Values) == 0 {
-		return &emptyRows{}, nil
+func (b *sqliteBackend) LoadByParentKeys(ctx context.Context, op loadRowsOp) (rows, error) {
+	return b.LoadByKeys(ctx, op)
+}
+
+func (b *sqliteBackend) SelectExistingKeys(ctx context.Context, op keyScanOp) ([]Key, error) {
+	if len(op.Keys) == 0 {
+		return nil, nil
 	}
-	query, args := b.renderUpsert(stmt, stmt.Values)
-	return b.queryContext(ctx, query, args...)
+
+	query, args := b.renderSelectExistingKeys(op, rowsFromKeys(op.Keys))
+	rowSet, err := b.queryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rowSet.Close() }()
+	return scanTypedKeys(rowSet, op.KeyTypes)
 }
 
-func (b *sqliteBackend) Update(ctx context.Context, stmt updateOp) error {
-	if len(stmt.SetValues) == 0 {
-		// No-op for empty batch
+func (b *sqliteBackend) InsertRows(ctx context.Context, op saveRowsOp, rows []plannedRow) ([]savedRow, error) {
+	if len(rows) == 0 {
+		return nil, nil
+	}
+
+	indexes, saveRows := splitPlannedRows(rows)
+	if len(op.generatedPrimaryFields()) > 0 {
+		return b.insertGeneratedRows(ctx, op, indexes, saveRows)
+	}
+
+	query, args := b.renderInsertRows(op, saveRows)
+	rowSet, err := b.queryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rowSet.Close() }()
+
+	saved, err := scanKeyedSavedRows(op, indexes, saveRows, rowSet)
+	if err != nil {
+		return nil, err
+	}
+	if len(saved) != len(rows) {
+		return nil, fmt.Errorf("%w: expected %d inserted rows, got %d", ErrConsistency, len(rows), len(saved))
+	}
+	return saved, nil
+}
+
+func (b *sqliteBackend) insertGeneratedRows(ctx context.Context, op saveRowsOp, indexes []int, rows []saveRow) ([]savedRow, error) {
+	if len(rows) == 0 {
+		return nil, nil
+	}
+
+	useSQLiteSequence, err := b.hasSQLiteSequence(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	query, args, err := b.renderGeneratedInsertRows(op, indexes, rows, useSQLiteSequence)
+	if err != nil {
+		return nil, err
+	}
+	rowSet, err := b.queryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rowSet.Close() }()
+
+	valueRows, err := scanValueRows(rowSet, len(op.Returning))
+	if err != nil {
+		return nil, err
+	}
+	if len(valueRows) != len(rows) {
+		return nil, fmt.Errorf("expected %d returned rows, got %d", len(rows), len(valueRows))
+	}
+	return savedRowsBySingleIntKeyOrder(op, indexes, valueRows)
+}
+
+func (b *sqliteBackend) UpdateRows(ctx context.Context, op saveRowsOp, rows []plannedRow) ([]savedRow, error) {
+	if len(rows) == 0 {
+		return nil, nil
+	}
+
+	indexes, saveRows := splitPlannedRows(rows)
+	query, args := b.renderUpdateRows(op, saveRows)
+	rowSet, err := b.queryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rowSet.Close() }()
+
+	saved, err := scanKeyedSavedRows(op, indexes, saveRows, rowSet)
+	if err != nil {
+		return nil, err
+	}
+	if len(saved) != len(rows) {
+		return nil, fmt.Errorf("%w: expected %d updated rows, got %d", ErrStaleEntity, len(rows), len(saved))
+	}
+	return saved, nil
+}
+
+func (b *sqliteBackend) SelectMissingChildren(ctx context.Context, op selectMissingChildrenOp) ([]Key, error) {
+	if len(op.ParentKeys) == 0 {
+		return nil, nil
+	}
+
+	parentRows := rowsFromKeys(op.ParentKeys)
+	keepRows := keepRowsFromPairs(op.KeepPairs)
+
+	query, args := b.renderSelectMissingChildren(op, parentRows, keepRows)
+	rowSet, err := b.queryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rowSet.Close() }()
+	return scanKeys(rowSet, len(op.ChildKeyColumns))
+}
+
+func (b *sqliteBackend) DeleteRowsByKeys(ctx context.Context, op deleteRowsOp) error {
+	return b.deleteRows(ctx, op)
+}
+
+func (b *sqliteBackend) deleteRows(ctx context.Context, op deleteRowsOp) error {
+	if len(op.Keys) == 0 {
 		return nil
 	}
-	query, args := b.renderUpdate(stmt, stmt.SetValues, stmt.WhereValues)
-	_, err := b.execContext(ctx, query, args...)
-	return err
-}
 
-func (b *sqliteBackend) Delete(ctx context.Context, stmt deleteOp) error {
-	if len(stmt.Keys) == 0 {
-		// No-op for empty batch
-		return nil
-	}
-	// Convert Keys to [][]any for rendering
-	values := make([][]any, len(stmt.Keys))
-	for i, k := range stmt.Keys {
-		values[i] = make([]any, k.Length())
-		for j := 0; j < k.Length(); j++ {
-			values[i][j] = k.At(j)
-		}
-	}
-
-	query, args := b.renderDelete(stmt, values)
+	query, args := b.renderDelete(op, rowsFromKeys(op.Keys))
 
 	_, err := b.execContext(ctx, query, args...)
 	return err

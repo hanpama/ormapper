@@ -54,6 +54,8 @@ func resetPostgresSchema(t *testing.T, ctx context.Context, db *sql.DB) {
 		`DROP TABLE IF EXISTS order_items`,
 		`DROP TABLE IF EXISTS order_notes`,
 		`DROP TABLE IF EXISTS orders`,
+		`DROP TABLE IF EXISTS identifying_details`,
+		`DROP TABLE IF EXISTS identifying_roots`,
 		`DROP TABLE IF EXISTS "special quote"`,
 		`DROP TABLE IF EXISTS composite`,
 		`DROP TABLE IF EXISTS simple_uuid`,
@@ -100,6 +102,14 @@ func resetPostgresSchema(t *testing.T, ctx context.Context, db *sql.DB) {
 		`CREATE TABLE order_notes (
 			id BIGSERIAL PRIMARY KEY,
 			order_id BIGINT NOT NULL REFERENCES orders(id),
+			body TEXT NOT NULL
+		)`,
+		`CREATE TABLE identifying_roots (
+			id BIGSERIAL PRIMARY KEY,
+			name TEXT NOT NULL
+		)`,
+		`CREATE TABLE identifying_details (
+			root_id BIGINT PRIMARY KEY REFERENCES identifying_roots(id),
 			body TEXT NOT NULL
 		)`,
 	}

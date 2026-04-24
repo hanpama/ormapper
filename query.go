@@ -218,7 +218,7 @@ func (q *Query[T]) fetch(ctx context.Context, limit *int) ([]*T, error) {
 		expectedCapacity = *limit
 	}
 
-	u := newPersistenceOp(q.mapper, q.db)
+	u := newPersistence(q.mapper.mappings, backend)
 	entities := make([]any, 0, expectedCapacity)
 	for rows.Next() {
 		entityPtr := reflect.New(q.mapping.EntityType).Interface()
