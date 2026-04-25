@@ -23,6 +23,19 @@ type childRelationSnapshot struct {
 	parentByChild map[Key]Key
 }
 
+type keepPair struct {
+	parentKey Key
+	childKey  Key
+}
+
+type saveRowIntent int
+
+const (
+	saveRowManualKey saveRowIntent = iota
+	saveRowGeneratedInsert
+	saveRowGeneratedUpdate
+)
+
 func newPersistence(registry mappingRegistry, backend backend) *persistence {
 	return &persistence{
 		registry: registry,
@@ -236,6 +249,36 @@ func keySet(keys []Key) map[Key]struct{} {
 	return result
 }
 
+func classifySaveRow(layout *saveRowsLayout, row saveRow) (saveRowIntent, error) {
+	generatedIndexes := layout.generatedPrimaryIndexes
+	if len(generatedIndexes) == 0 {
+		return saveRowManualKey, nil
+	}
+
+	zeroCount := 0
+	for _, idx := range generatedIndexes {
+		if valueIsZero(row.values[idx]) {
+			zeroCount++
+		}
+	}
+	switch zeroCount {
+	case len(generatedIndexes):
+		return saveRowGeneratedInsert, nil
+	case 0:
+		return saveRowGeneratedUpdate, nil
+	default:
+		return 0, fmt.Errorf("%w: generated primary key fields must be all zero or all non-zero", ErrUnsupportedSemantic)
+	}
+}
+
+func valueIsZero(value any) bool {
+	if value == nil {
+		return true
+	}
+	v := reflect.ValueOf(value)
+	return !v.IsValid() || v.IsZero()
+}
+
 func buildKeepPairs(childMapping *entityMapping, relation *child, parents []saveResult) []keepPair {
 	childCount := 0
 	for _, result := range parents {
@@ -388,7 +431,7 @@ func (u *persistence) saveRows(ctx context.Context, em *entityMapping, entities 
 			row[j] = field.valueFrom(entityValue)
 		}
 		planned := plannedRow{index: i, row: saveRow{values: row}}
-		intent, err := saveOp.classifyRow(planned.row)
+		intent, err := classifySaveRow(saveOp.layout, planned.row)
 		if err != nil {
 			return nil, err
 		}

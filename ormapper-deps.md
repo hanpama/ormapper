@@ -19,7 +19,7 @@ graph TD
 
   persistence_go["persistence.go\ngraph save/load/delete orchestration"]
   operations_go["operations.go\nbackend operation DTOs"]
-  backend_scan_go["backend_scan.go\nreturned-row scan/correlation"]
+  row_scan_go["row_scan.go\nrow scan/correlation helpers"]
   sql_go["sql.go\nSQL AST helpers"]
   errors_go["errors.go\nsemantic errors"]
   key_go["key.go\nKey values"]
@@ -55,7 +55,7 @@ graph TD
   persistence_go --> registry_go
   persistence_go --> mapping_go
   persistence_go --> operations_go
-  persistence_go --> backend_scan_go
+  persistence_go --> row_scan_go
   persistence_go --> errors_go
   persistence_go --> key_go
 
@@ -63,22 +63,21 @@ graph TD
   backend_go --> sql_go
   backend_go --> key_go
 
-  operations_go --> errors_go
   operations_go --> key_go
 
-  backend_scan_go --> backend_go
-  backend_scan_go --> operations_go
-  backend_scan_go --> key_go
+  row_scan_go --> backend_go
+  row_scan_go --> operations_go
+  row_scan_go --> key_go
 
   postgres_go --> backend_go
-  postgres_go --> backend_scan_go
+  postgres_go --> row_scan_go
   postgres_go --> operations_go
   postgres_go --> sql_go
   postgres_go --> errors_go
   postgres_go --> key_go
 
   sqlite_go --> backend_go
-  sqlite_go --> backend_scan_go
+  sqlite_go --> row_scan_go
   sqlite_go --> operations_go
   sqlite_go --> sql_go
   sqlite_go --> errors_go
@@ -97,26 +96,27 @@ graph TD
 | `save_graph.go` cross-reference is gone | OK | Relation snapshot/reconcile code is merged into `persistence.go`. |
 | `extract.go` standalone file is gone | OK | Key extraction is part of `mapping.go`, adjacent to mapping metadata. |
 | `mapping.go` no longer depends on persistence helpers | OK | `uniqueFieldNames` moved into mapping code. |
+| `operations.go` does not carry entity field or relation plans | OK | Entity-facing `saveLayout` lives in `mapping.go`; relation diff helpers live in `persistence.go`. |
 
 ## Current File Roles
 
-| File | Role |
-|---|---|
-| `package.go` | Package documentation and built-in dialect entry points. |
-| `backend.go` | Public DB handle abstraction plus internal backend contract. |
-| `compile.go` | Public mapping registration, struct tag analysis, validation, and private mapping construction subroutines. |
-| `registry.go` | Mapping lookup abstraction shared by Mapper and persistence. |
-| `mapper.go` | Public aggregate API: `Get`, `Save`, `Delete`. |
-| `query.go` | Public typed query API. |
-| `mapping.go` | Compiled entity execution plans, save layout, child metadata, key extraction, and reflect accessors. |
-| `persistence.go` | Stateless graph persistence orchestration. |
-| `operations.go` | High-level backend operation DTOs and operation helpers. |
-| `backend_scan.go` | Backend returned-row scan and correlation helpers. |
-| `postgres.go` | PostgreSQL SQL rendering and backend execution. |
-| `sqlite.go` | SQLite SQL rendering and backend execution. |
-| `sql.go` | Query SQL node model and parser. |
-| `key.go` | Comparable key representation. |
-| `errors.go` | Public semantic error sentinels. |
+| File | Layer | Role |
+|---|---|---|
+| `package.go` | Entry point | Package documentation and built-in dialect entry points. |
+| `backend.go` | Driver contract / basic types | Public DB handle abstraction plus internal backend contract. |
+| `key.go` | Driver contract / basic types | Comparable key representation. |
+| `errors.go` | Driver contract / basic types | Public semantic error sentinels. |
+| `sql.go` | Driver contract / basic types | Query SQL node model and parser shared by query and dialect renderers. |
+| `operations.go` | Driver contract / basic types | Backend operation DTOs and row/key projection helpers. |
+| `row_scan.go` | Driver contract / basic types | Shared row scan, normalization, and returned-row correlation helpers. |
+| `compile.go` | Mapping | Public mapping registration, struct tag analysis, validation, and private mapping construction subroutines. |
+| `mapping.go` | Mapping | Compiled entity execution plans, save layout, child metadata, key extraction, and reflect accessors. |
+| `registry.go` | Mapping | Mapping lookup abstraction shared by Mapper and persistence. |
+| `mapper.go` | Mapper / persistence | Public aggregate API: `Get`, `Save`, `Delete`. |
+| `query.go` | Mapper / persistence | Public typed query API. |
+| `persistence.go` | Mapper / persistence | Stateless graph persistence orchestration. |
+| `postgres.go` | Driver implementation | PostgreSQL SQL rendering and backend execution. |
+| `sqlite.go` | Driver implementation | SQLite SQL rendering and backend execution. |
 
 ## Removed Files
 
@@ -131,9 +131,9 @@ graph TD
 
 ## Remaining Tensions
 
-- `mapping.go` currently builds `saveLayout`, while `operations.go` owns the
-  backend-facing `saveRowsLayout`. This split keeps entity field plans out of
-  backend operation DTOs.
+- `mapping.go` owns the entity-facing `saveLayout`, while `operations.go` owns
+  the backend-facing `saveRowsLayout`. This split keeps entity field plans out
+  of backend operation DTOs.
 - `postgres.go` and `sqlite.go` are intentionally large because each keeps SQL
   rendering and execution together. Splitting renderers later should be based on
   evidence from readability or test friction, not file length alone.

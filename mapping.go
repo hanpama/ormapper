@@ -134,6 +134,12 @@ func (c *child) setByParentIndexes(parents []any, children []any, parentIndexes 
 	}
 }
 
+type saveLayout struct {
+	rowFields       []*field
+	returningFields []*field
+	rows            saveRowsLayout
+}
+
 type entityMapping struct {
 	entityType  reflect.Type
 	schema      string

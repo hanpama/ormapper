@@ -1,9 +1,6 @@
 package ormapper
 
-import (
-	"fmt"
-	"reflect"
-)
+import "reflect"
 
 type loadRowsOp struct {
 	schema        string
@@ -41,12 +38,6 @@ type savedRow struct {
 	values []any
 }
 
-type saveLayout struct {
-	rowFields       []*field
-	returningFields []*field
-	rows            saveRowsLayout
-}
-
 type saveRowsLayout struct {
 	rowColumns                        []string
 	insertColumns                     []string
@@ -60,19 +51,6 @@ type saveRowsLayout struct {
 	generatedPrimaryIndexes           []int
 	returningColumns                  []string
 	primaryReturningIndexes           []int
-}
-
-type saveRowIntent int
-
-const (
-	saveRowManualKey saveRowIntent = iota
-	saveRowGeneratedInsert
-	saveRowGeneratedUpdate
-)
-
-type keepPair struct {
-	parentKey Key
-	childKey  Key
 }
 
 type deleteRowsOp struct {
@@ -92,28 +70,6 @@ func (op saveRowsOp) insertValuesForRow(row saveRow) []any {
 
 func (op saveRowsOp) keyFromReturnedValues(values []any) Key {
 	return coercedKeyFromIndexes(values, op.layout.primaryReturningIndexes, op.layout.primaryTypes)
-}
-
-func (op saveRowsOp) classifyRow(row saveRow) (saveRowIntent, error) {
-	generatedIndexes := op.layout.generatedPrimaryIndexes
-	if len(generatedIndexes) == 0 {
-		return saveRowManualKey, nil
-	}
-
-	zeroCount := 0
-	for _, idx := range generatedIndexes {
-		if valueIsZero(row.values[idx]) {
-			zeroCount++
-		}
-	}
-	switch zeroCount {
-	case len(generatedIndexes):
-		return saveRowGeneratedInsert, nil
-	case 0:
-		return saveRowGeneratedUpdate, nil
-	default:
-		return 0, fmt.Errorf("%w: generated primary key fields must be all zero or all non-zero", ErrUnsupportedSemantic)
-	}
 }
 
 func (op saveRowsOp) keyFromRow(row saveRow) Key {
@@ -140,14 +96,6 @@ func coercedKeyFromIndexes(values []any, indexes []int, types []reflect.Type) Ke
 		keyValues[i] = coerceValue(values[idx], types[i])
 	}
 	return newKeyFromValues(keyValues[:len(indexes)])
-}
-
-func valueIsZero(value any) bool {
-	if value == nil {
-		return true
-	}
-	v := reflect.ValueOf(value)
-	return !v.IsValid() || v.IsZero()
 }
 
 func coerceValue(value any, target reflect.Type) any {

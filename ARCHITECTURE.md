@@ -580,8 +580,8 @@ persistence.go
 mapping.go / registry.go
   Compiled entity execution plans, key extraction, and lookup.
 
-operations.go / backend_scan.go
-  Backend operation DTOs and shared returned-row scan/correlation helpers.
+operations.go / row_scan.go
+  Backend operation DTOs, row/key projection helpers, and shared row scan/correlation helpers.
   Backend ops must not expose entity field or relation plans.
 ```
 
