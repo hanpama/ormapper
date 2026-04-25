@@ -220,3 +220,19 @@ func newKeySet(keys []Key) keySet {
 	}
 	return s
 }
+
+func uniqueKeys(keys []Key) []Key {
+	if len(keys) < 2 {
+		return keys
+	}
+	result := make([]Key, 0, len(keys))
+	seen := make(keySet, len(keys))
+	for _, key := range keys {
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		result = append(result, key)
+	}
+	return result
+}

@@ -143,7 +143,11 @@ func (u *persistence) save(ctx context.Context, em *entityMapping, entities []an
 	var toUpdate []plannedRow
 
 	if len(candidates) > 0 {
-		existingKeys, err := u.selectExistingKeys(ctx, em, keysFromPlannedRows(candidates))
+		candidateKeys := make([]Key, len(candidates))
+		for i, row := range candidates {
+			candidateKeys[i] = row.key
+		}
+		existingKeys, err := u.selectExistingKeys(ctx, em, candidateKeys)
 		if err != nil {
 			return err
 		}
@@ -551,28 +555,3 @@ func (u *persistence) loadKeysByParentKeys(ctx context.Context, em *entityMappin
 	return scanTypedKeys(rowSet, em.primaryPlan.types)
 }
 
-// --- Helpers ---
-
-func keysFromPlannedRows(rows []plannedRow) []Key {
-	keys := make([]Key, len(rows))
-	for i, row := range rows {
-		keys[i] = row.key
-	}
-	return keys
-}
-
-func uniqueKeys(keys []Key) []Key {
-	if len(keys) < 2 {
-		return keys
-	}
-	result := make([]Key, 0, len(keys))
-	seen := make(map[Key]struct{}, len(keys))
-	for _, key := range keys {
-		if _, ok := seen[key]; ok {
-			continue
-		}
-		seen[key] = struct{}{}
-		result = append(result, key)
-	}
-	return result
-}
