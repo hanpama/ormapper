@@ -93,7 +93,7 @@ graph TD
 | Concrete backend construction lives with each engine | OK | `postgresDialect.newBackend` is in `postgres.go`; `sqliteDialect.newBackend` is in `sqlite.go`. |
 | `Mapper` does not perform graph persistence itself | OK | `mapper.go` validates public API inputs and delegates to `persistence.go`. |
 | `persistence.go` no longer depends on `Mapper` | OK | It receives `mappingRegistry` and `backend`. |
-| `save_graph.go` cross-reference is gone | OK | Relation snapshot/reconcile code is merged into `persistence.go`. |
+| `save_graph.go` cross-reference is gone | OK | Relation reconcile code is inline in `persistence.go`. |
 | `extract.go` standalone file is gone | OK | Key extraction is part of `mapping.go`, adjacent to mapping metadata. |
 | `mapping.go` no longer depends on persistence helpers | OK | `uniqueFieldNames` moved into mapping code. |
 | Backend operation DTOs do not carry entity field or relation plans | OK | Entity-facing `saveLayout` lives in `mapping.go`; relation diff helpers live in `persistence.go`. |

@@ -187,10 +187,13 @@ Generated insert candidate는 existence scan을 하지 않는다. insert 때 aut
 Child relation은 parent key로 기존 child key들을 먼저 batch load한다.
 
 ```text
-LoadRows(parentKeys, select parentKey + childPrimaryKey) => childRelationSnapshot
+LoadRows(parentKeys, select parentKey + childPrimaryKey)
+=> existingChildKeysByParent
+=> existingParentByChild
 ```
 
-그 relation state 하나로 세 가지 판단을 모두 수행한다.
+Save child relation을 처리하는 동일한 함수 실행 맥락에서 기존 relation
+state와 submitted children을 비교해 세 가지 판단을 모두 수행한다.
 
 ```text
 submitted child key exists under submitted parent => toUpdate
