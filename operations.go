@@ -82,18 +82,6 @@ type deleteRowsOp struct {
 	keys       []Key
 }
 
-func (op saveRowsOp) insertColumns() []string {
-	return op.layout.insertColumns
-}
-
-func (op saveRowsOp) insertColumnsWithGeneratedPrimary() []string {
-	return op.layout.insertColumnsWithGeneratedPrimary
-}
-
-func (op saveRowsOp) rowColumns() []string {
-	return op.layout.rowColumns
-}
-
 func (op saveRowsOp) insertValuesForRow(row saveRow) []any {
 	projected := make([]any, len(op.layout.insertIndexes))
 	for j, idx := range op.layout.insertIndexes {
@@ -102,32 +90,12 @@ func (op saveRowsOp) insertValuesForRow(row saveRow) []any {
 	return projected
 }
 
-func (op saveRowsOp) primaryKeyIndexes() []int {
-	return op.layout.primaryIndexes
-}
-
-func (op saveRowsOp) generatedPrimaryIndexes() []int {
-	return op.layout.generatedPrimaryIndexes
-}
-
-func (op saveRowsOp) primaryKeyCount() int {
-	return len(op.layout.primaryColumns)
-}
-
-func (op saveRowsOp) generatedPrimaryColumns() []string {
-	return op.layout.generatedPrimaryColumns
-}
-
-func (op saveRowsOp) returningColumns() []string {
-	return op.layout.returningColumns
-}
-
 func (op saveRowsOp) keyFromReturnedValues(values []any) Key {
 	return coercedKeyFromIndexes(values, op.layout.primaryReturningIndexes, op.layout.primaryTypes)
 }
 
 func (op saveRowsOp) classifyRow(row saveRow) (saveRowIntent, error) {
-	generatedIndexes := op.generatedPrimaryIndexes()
+	generatedIndexes := op.layout.generatedPrimaryIndexes
 	if len(generatedIndexes) == 0 {
 		return saveRowManualKey, nil
 	}
@@ -149,7 +117,7 @@ func (op saveRowsOp) classifyRow(row saveRow) (saveRowIntent, error) {
 }
 
 func (op saveRowsOp) keyFromRow(row saveRow) Key {
-	return keyFromIndexes(row.values, op.primaryKeyIndexes())
+	return keyFromIndexes(row.values, op.layout.primaryIndexes)
 }
 
 func keyFromIndexes(values []any, indexes []int) Key {
@@ -194,12 +162,4 @@ func coerceValue(value any, target reflect.Type) any {
 		return v.Convert(target).Interface()
 	}
 	return value
-}
-
-func (op saveRowsOp) conflictColumns() []string {
-	return op.layout.primaryColumns
-}
-
-func (op saveRowsOp) updateColumns() []string {
-	return op.layout.updateColumns
 }

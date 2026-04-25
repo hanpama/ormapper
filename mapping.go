@@ -237,10 +237,12 @@ func newSaveLayout(
 	rows.generatedPrimaryIndexes = make([]int, 0, len(primaryKey))
 	rows.returningColumns = make([]string, 0, len(allFields))
 	rows.primaryReturningIndexes = make([]int, 0, len(primaryKey))
+	rowIndexByName := make(map[string]int, len(allFields))
 
 	for _, name := range allFields {
 		if slices.Contains(insertable, name) || slices.Contains(primaryKey, name) || slices.Contains(updatable, name) {
 			field := fieldMap[name]
+			rowIndexByName[name] = len(layout.rowFields)
 			layout.rowFields = append(layout.rowFields, field)
 			rows.rowColumns = append(rows.rowColumns, field.column)
 		}
@@ -259,11 +261,11 @@ func newSaveLayout(
 	for _, name := range primaryKey {
 		column := fieldMap[name].column
 		rows.primaryColumns = append(rows.primaryColumns, column)
-		rows.primaryIndexes = append(rows.primaryIndexes, indexFieldByName(layout.rowFields, name))
+		rows.primaryIndexes = append(rows.primaryIndexes, rowIndexByName[name])
 		rows.primaryTypes = append(rows.primaryTypes, fieldMap[name].typ)
 		if !slices.Contains(insertable, name) {
 			rows.generatedPrimaryColumns = append(rows.generatedPrimaryColumns, column)
-			rows.generatedPrimaryIndexes = append(rows.generatedPrimaryIndexes, indexFieldByName(layout.rowFields, name))
+			rows.generatedPrimaryIndexes = append(rows.generatedPrimaryIndexes, rowIndexByName[name])
 		}
 	}
 
@@ -288,11 +290,35 @@ func newSaveLayout(
 	return layout
 }
 
-func indexFieldByName(fields []*field, name string) int {
-	for i, field := range fields {
-		if field.name == name {
-			return i
-		}
+func (em *entityMapping) extractKey(entity any, fieldNames []string) Key {
+	return extractKeyFromFields(entity, em.fieldsByName(fieldNames))
+}
+
+func (em *entityMapping) extractPrimaryKey(entity any) Key {
+	return extractKeyFromFields(entity, em.primaryPlan.fields)
+}
+
+func (em *entityMapping) extractParentalKey(entity any) Key {
+	return extractKeyFromFields(entity, em.parentalPlan.fields)
+}
+
+func (em *entityMapping) fieldsByName(fieldNames []string) []*field {
+	fields := make([]*field, len(fieldNames))
+	for i, name := range fieldNames {
+		fields[i] = em.fieldMap[name]
 	}
-	return -1
+	return fields
+}
+
+func extractKeyFromFields(entity any, fields []*field) Key {
+	if len(fields) > 9 {
+		panic("ormapper: Key supports up to 9 column values")
+	}
+
+	entityValue := reflect.ValueOf(entity).Elem()
+	var values [9]any
+	for i, field := range fields {
+		values[i] = field.valueFrom(entityValue)
+	}
+	return newKeyFromValues(values[:len(fields)])
 }

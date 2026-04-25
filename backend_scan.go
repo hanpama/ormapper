@@ -16,22 +16,6 @@ func splitPlannedRows(rows []plannedRow) ([]int, []saveRow) {
 	return indexes, saveRows
 }
 
-func keysFromPlannedRows(op saveRowsOp, rows []plannedRow) []Key {
-	keys := make([]Key, len(rows))
-	for i, row := range rows {
-		keys[i] = op.keyFromRow(row.row)
-	}
-	return keys
-}
-
-func keySet(keys []Key) map[Key]struct{} {
-	result := make(map[Key]struct{}, len(keys))
-	for _, key := range keys {
-		result[key] = struct{}{}
-	}
-	return result
-}
-
 func scanKeyedSavedRows(op saveRowsOp, indexes []int, saveRows []saveRow, rowSet rows) ([]savedRow, error) {
 	inputByKey := make(map[Key]int, len(saveRows))
 	for i, row := range saveRows {
@@ -42,7 +26,7 @@ func scanKeyedSavedRows(op saveRowsOp, indexes []int, saveRows []saveRow, rowSet
 		inputByKey[key] = indexes[i]
 	}
 
-	returningColumnCount := len(op.returningColumns())
+	returningColumnCount := len(op.layout.returningColumns)
 	dest := make([]any, returningColumnCount)
 	saved := make([]savedRow, 0, len(saveRows))
 	for rowSet.Next() {
@@ -86,7 +70,7 @@ func scanIndexedSavedRows(rowSet rows, returningColumns int) ([]savedRow, error)
 }
 
 func scanRowsBySingleIntKeyOrder(op saveRowsOp, indexes []int, rowSet rows) ([]savedRow, error) {
-	if op.primaryKeyCount() != 1 {
+	if len(op.layout.primaryColumns) != 1 {
 		return nil, fmt.Errorf("ordered generated insert correlation requires one primary key")
 	}
 
@@ -94,7 +78,7 @@ func scanRowsBySingleIntKeyOrder(op saveRowsOp, indexes []int, rowSet rows) ([]s
 		key    int64
 		values []any
 	}
-	returningColumnCount := len(op.returningColumns())
+	returningColumnCount := len(op.layout.returningColumns)
 	dest := make([]any, returningColumnCount)
 	keyed := make([]keyedRow, 0, len(indexes))
 	for rowSet.Next() {

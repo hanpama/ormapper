@@ -577,11 +577,11 @@ persistence.go
   Stateless graph save/load/delete orchestration.
   It receives mappingRegistry and backend, not Mapper.
 
-mapping.go / mapping_key.go / registry.go
+mapping.go / registry.go
   Compiled entity execution plans, key extraction, and lookup.
 
-operations.go / backend_helpers.go
-  Backend operation DTOs and shared scan/key helpers.
+operations.go / backend_scan.go
+  Backend operation DTOs and shared returned-row scan/correlation helpers.
   Backend ops must not expose entity field or relation plans.
 ```
 
@@ -593,4 +593,4 @@ Important dependency rules:
 - `mapping.go` never depends on persistence helpers.
 - backend operation plans must not carry entity field or child relation metadata.
 - relation graph helpers stay inside `persistence.go`; no separate cross-referencing `save_graph.go`.
-- key extraction belongs to mapping, hence `mapping_key.go`, not a generic `extract.go`.
+- key extraction belongs inside `mapping.go`, not a separate generic `extract.go`.

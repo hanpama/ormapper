@@ -220,6 +220,22 @@ func existingParentKeys(parents []saveResult) []Key {
 	return keys
 }
 
+func keysFromPlannedRows(op saveRowsOp, rows []plannedRow) []Key {
+	keys := make([]Key, len(rows))
+	for i, row := range rows {
+		keys[i] = op.keyFromRow(row.row)
+	}
+	return keys
+}
+
+func keySet(keys []Key) map[Key]struct{} {
+	result := make(map[Key]struct{}, len(keys))
+	for _, key := range keys {
+		result[key] = struct{}{}
+	}
+	return result
+}
+
 func buildKeepPairs(childMapping *entityMapping, relation *child, parents []saveResult) []keepPair {
 	childCount := 0
 	for _, result := range parents {
