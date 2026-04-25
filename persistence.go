@@ -258,7 +258,6 @@ func collectSubmittedChildren(parentMapping *entityMapping, parentEntities []any
 		}
 	}
 
-	existingParentKeys = uniqueKeys(existingParentKeys)
 	return
 }
 
@@ -478,7 +477,6 @@ func (u *persistence) savePlannedRows(ctx context.Context, em *entityMapping, en
 }
 
 func (u *persistence) selectExistingKeys(ctx context.Context, em *entityMapping, keys []Key) ([]Key, error) {
-	keys = uniqueKeys(keys)
 	if len(keys) == 0 {
 		return nil, nil
 	}
@@ -505,7 +503,6 @@ func (u *persistence) applyReturnedValues(entity any, fields []*field, values []
 // --- Delete ---
 
 func (u *persistence) deleteByKeys(ctx context.Context, em *entityMapping, keys []Key) error {
-	keys = uniqueKeys(keys)
 	if len(keys) == 0 {
 		return nil
 	}
@@ -535,7 +532,6 @@ func (u *persistence) deleteByKeys(ctx context.Context, em *entityMapping, keys 
 }
 
 func (u *persistence) loadKeysByParentKeys(ctx context.Context, em *entityMapping, parentKeys []Key) ([]Key, error) {
-	parentKeys = uniqueKeys(parentKeys)
 	if len(parentKeys) == 0 {
 		return nil, nil
 	}
