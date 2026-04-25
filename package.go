@@ -4,7 +4,7 @@
 //
 //  1. Compile a Mapper from your entity structs.
 //  2. Pass context plus *sql.DB or *sql.Tx to each operation.
-//  3. Use Get, Save, and Delete for aggregate persistence.
+//  3. Use Get, Save, Delete, and their Many variants for aggregate persistence.
 //  4. Use NewQuery for typed reads.
 //
 // ormapper does not expose a long-lived session. The caller owns transaction

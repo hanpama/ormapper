@@ -22,6 +22,7 @@ func Run(t *testing.T, f Fixture) {
 
 	t.Run("Persistence", func(t *testing.T) {
 		t.Run("SimpleAuto", func(t *testing.T) { runSimpleAuto(t, f) })
+		t.Run("BulkMapper", func(t *testing.T) { runBulkMapper(t, f) })
 		t.Run("GeneratedAutoKeyNotReused", func(t *testing.T) { runGeneratedAutoKeyNotReused(t, f) })
 		t.Run("SimpleUUID", func(t *testing.T) { runSimpleUUID(t, f) })
 		t.Run("Composite", func(t *testing.T) { runComposite(t, f) })
@@ -151,6 +152,80 @@ func runSimpleAuto(t *testing.T, f Fixture) {
 	}
 	if err := m.Save(ctx, f.DB, stale); !errors.Is(err, ormapper.ErrStaleEntity) {
 		t.Fatalf("expected stale generated entity error, got %v", err)
+	}
+}
+
+func runBulkMapper(t *testing.T, f Fixture) {
+	ctx := reset(t, f)
+	m := mapperFor(f.Dialect)
+
+	first := &simpleAuto{Name: "bulk-first"}
+	second := &simpleAuto{Name: "bulk-second"}
+	if err := m.SaveMany(ctx, f.DB, []*simpleAuto{first, second}); err != nil {
+		t.Fatalf("SaveMany insert: %v", err)
+	}
+	if first.ID == 0 || second.ID == 0 || first.ID == second.ID {
+		t.Fatalf("expected distinct generated IDs, got first=%d second=%d", first.ID, second.ID)
+	}
+
+	var loaded []*simpleAuto
+	ids := []ormapper.Key{
+		ormapper.NewKey(second.ID),
+		ormapper.NewKey(int64(999999)),
+		ormapper.NewKey(first.ID),
+	}
+	if err := m.GetMany(ctx, f.DB, &loaded, ids); err != nil {
+		t.Fatalf("GetMany: %v", err)
+	}
+	if len(loaded) != len(ids) {
+		t.Fatalf("expected %d loaded slots, got %d", len(ids), len(loaded))
+	}
+	if loaded[0] == nil || loaded[0].ID != second.ID || loaded[0].Name != "bulk-second" {
+		t.Fatalf("expected second entity in first slot, got %#v", loaded[0])
+	}
+	if loaded[1] != nil {
+		t.Fatalf("expected missing entity slot to be nil, got %#v", loaded[1])
+	}
+	if loaded[2] == nil || loaded[2].ID != first.ID || loaded[2].Name != "bulk-first" {
+		t.Fatalf("expected first entity in third slot, got %#v", loaded[2])
+	}
+
+	first.Name = "bulk-first-updated"
+	second.Name = "bulk-second-updated"
+	if err := m.SaveMany(ctx, f.DB, []*simpleAuto{first, second}); err != nil {
+		t.Fatalf("SaveMany update: %v", err)
+	}
+
+	loaded = nil
+	if err := m.GetMany(ctx, f.DB, &loaded, []ormapper.Key{ormapper.NewKey(first.ID), ormapper.NewKey(second.ID)}); err != nil {
+		t.Fatalf("GetMany after update: %v", err)
+	}
+	if loaded[0] == nil || loaded[0].Name != "bulk-first-updated" {
+		t.Fatalf("expected first update, got %#v", loaded[0])
+	}
+	if loaded[1] == nil || loaded[1].Name != "bulk-second-updated" {
+		t.Fatalf("expected second update, got %#v", loaded[1])
+	}
+
+	if err := m.DeleteMany(ctx, f.DB, []*simpleAuto{{ID: first.ID}, {ID: second.ID}}); err != nil {
+		t.Fatalf("DeleteMany: %v", err)
+	}
+	if countRows(t, ctx, f.DB, "SELECT COUNT(*) FROM simple_auto WHERE id IN ("+f.Placeholder(1)+", "+f.Placeholder(2)+")", first.ID, second.ID) != 0 {
+		t.Fatal("expected DeleteMany to remove both rows")
+	}
+
+	var empty []*simpleAuto
+	if err := m.GetMany(ctx, f.DB, &empty, nil); err != nil {
+		t.Fatalf("GetMany empty: %v", err)
+	}
+	if len(empty) != 0 {
+		t.Fatalf("expected empty GetMany result, got %d", len(empty))
+	}
+	if err := m.SaveMany(ctx, f.DB, []*simpleAuto{}); err != nil {
+		t.Fatalf("SaveMany empty: %v", err)
+	}
+	if err := m.DeleteMany(ctx, f.DB, []*simpleAuto{}); err != nil {
+		t.Fatalf("DeleteMany empty: %v", err)
 	}
 }
 
@@ -808,6 +883,16 @@ func runValidation(t *testing.T, f Fixture) {
 		}
 	})
 
+	t.Run("GetManyDest", func(t *testing.T) {
+		var entities []*simpleAuto
+		if err := m.GetMany(ctx, f.DB, entities, []ormapper.Key{ormapper.NewKey(int64(1))}); err == nil {
+			t.Fatal("expected error for non-pointer dest")
+		}
+		if err := m.GetMany(ctx, f.DB, &[]simpleAuto{}, []ormapper.Key{ormapper.NewKey(int64(1))}); err == nil {
+			t.Fatal("expected error for non entity-pointer slice dest")
+		}
+	})
+
 	t.Run("SaveEntity", func(t *testing.T) {
 		if err := m.Save(ctx, f.DB, simpleAuto{}); err == nil {
 			t.Fatal("expected error for non-pointer entity")
@@ -818,6 +903,18 @@ func runValidation(t *testing.T, f Fixture) {
 		}
 	})
 
+	t.Run("SaveManyEntities", func(t *testing.T) {
+		if err := m.SaveMany(ctx, f.DB, simpleAuto{}); err == nil {
+			t.Fatal("expected error for non-slice entities")
+		}
+		if err := m.SaveMany(ctx, f.DB, []simpleAuto{}); err == nil {
+			t.Fatal("expected error for non-pointer entity slice")
+		}
+		if err := m.SaveMany(ctx, f.DB, []*simpleAuto{nil}); err == nil {
+			t.Fatal("expected error for nil entity")
+		}
+	})
+
 	t.Run("DeleteEntity", func(t *testing.T) {
 		if err := m.Delete(ctx, f.DB, simpleAuto{}); err == nil {
 			t.Fatal("expected error for non-pointer entity")
@@ -825,6 +922,18 @@ func runValidation(t *testing.T, f Fixture) {
 		v := 1
 		if err := m.Delete(ctx, f.DB, &v); err == nil {
 			t.Fatal("expected error for pointer to non-struct")
+		}
+	})
+
+	t.Run("DeleteManyEntities", func(t *testing.T) {
+		if err := m.DeleteMany(ctx, f.DB, simpleAuto{}); err == nil {
+			t.Fatal("expected error for non-slice entities")
+		}
+		if err := m.DeleteMany(ctx, f.DB, []simpleAuto{}); err == nil {
+			t.Fatal("expected error for non-pointer entity slice")
+		}
+		if err := m.DeleteMany(ctx, f.DB, []*simpleAuto{nil}); err == nil {
+			t.Fatal("expected error for nil entity")
 		}
 	})
 

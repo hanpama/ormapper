@@ -4,7 +4,7 @@
 
 - compile mappings once at startup
 - pass `context.Context` plus `*sql.DB` or `*sql.Tx` to each operation
-- use `Get`, `Save`, and `Delete` for aggregate persistence
+- use `Get`, `Save`, `Delete`, and their `Many` variants for aggregate persistence
 - use `NewQuery` for typed reads
 
 `Save` treats the input value as the authoritative aggregate snapshot. It
