@@ -108,8 +108,7 @@ func (m *Mapper) Save(ctx context.Context, db DBTX, entity any) error {
 		return err
 	}
 
-	_, err = newPersistence(m.mappings, m.dialect.newBackend(db)).save(ctx, mapping, []any{entity})
-	return err
+	return newPersistence(m.mappings, m.dialect.newBackend(db)).save(ctx, mapping, []any{entity})
 }
 
 // SaveMany persists authoritative aggregate snapshots in one batched operation.
@@ -126,8 +125,7 @@ func (m *Mapper) SaveMany(ctx context.Context, db DBTX, entities any) error {
 		return err
 	}
 
-	_, err = newPersistence(m.mappings, m.dialect.newBackend(db)).save(ctx, mapping, values)
-	return err
+	return newPersistence(m.mappings, m.dialect.newBackend(db)).save(ctx, mapping, values)
 }
 
 // Delete removes the aggregate and its descendants from the database.
