@@ -189,7 +189,7 @@ func (u *persistence) savePlannedLevel(ctx context.Context, em *entityMapping, e
 func (u *persistence) saveChildRelation(ctx context.Context, parentMapping, childMapping *entityMapping, child *child, parentEntities []any, parentInserted []bool) error {
 	submitted, keepKeys, existingParentKeys := collectSubmittedChildren(parentMapping, parentEntities, parentInserted, child, childMapping)
 
-	existing, err := u.loadRelationState(ctx, childMapping, existingParentKeys)
+	existingChildKeys, existingParentByChild, err := u.loadRelationKeys(ctx, childMapping, existingParentKeys)
 	if err != nil {
 		return err
 	}
@@ -206,14 +206,13 @@ func (u *persistence) saveChildRelation(ctx context.Context, parentMapping, chil
 		for _, row := range candidates {
 			parentKey := childMapping.extractParentalKey(submitted[row.index])
 			childKey := row.key
-			existingChildren := existing.childKeysByParent[parentKey]
 
-			if _, ok := existingChildren[childKey]; ok {
+			if _, ok := existingChildKeys[parentKey][childKey]; ok {
 				toUpdate = append(toUpdate, row)
 			} else if childMapping.saveLayout.hasGeneratedKey() {
 				return fmt.Errorf("%w: generated key %v does not exist in parent relation for %s", ErrStaleEntity, childKey, childMapping.entityType)
 			} else {
-				if owner, ok := existing.parentByChildKey[childKey]; ok && owner != parentKey {
+				if owner, ok := existingParentByChild[childKey]; ok && owner != parentKey {
 					return fmt.Errorf("%w: key %v already exists under a different parent in %s", ErrConsistency, childKey, childMapping.entityType)
 				}
 				toInsert = append(toInsert, row)
@@ -225,7 +224,16 @@ func (u *persistence) saveChildRelation(ctx context.Context, parentMapping, chil
 		}
 	}
 
-	return u.deleteByKeys(ctx, childMapping, existing.orphanedKeys(keepKeys))
+	var toDelete []Key
+	for parentKey, children := range existingChildKeys {
+		keepSet := keepKeys[parentKey]
+		for childKey := range children {
+			if _, ok := keepSet[childKey]; !ok {
+				toDelete = append(toDelete, childKey)
+			}
+		}
+	}
+	return u.deleteByKeys(ctx, childMapping, toDelete)
 }
 
 func collectSubmittedChildren(parentMapping *entityMapping, parentEntities []any, parentInserted []bool, child *child, childMapping *entityMapping) (submitted []any, keepKeys map[Key]keySet, existingParentKeys []Key) {
@@ -289,43 +297,11 @@ func projectSaveRows(em *entityMapping, entities []any) (inserts, candidates []p
 	return inserts, candidates, nil
 }
 
-// --- Relation State ---
-
-type relationState struct {
-	childKeysByParent map[Key]keySet
-	parentByChildKey  map[Key]Key
-}
-
-func (s *relationState) add(parentKey, childKey Key) {
-	children := s.childKeysByParent[parentKey]
-	if children == nil {
-		children = make(keySet)
-		s.childKeysByParent[parentKey] = children
-	}
-	children[childKey] = struct{}{}
-	s.parentByChildKey[childKey] = parentKey
-}
-
-func (s relationState) orphanedKeys(keep map[Key]keySet) []Key {
-	var orphaned []Key
-	for parentKey, existingChildren := range s.childKeysByParent {
-		keepSet := keep[parentKey]
-		for childKey := range existingChildren {
-			if _, ok := keepSet[childKey]; !ok {
-				orphaned = append(orphaned, childKey)
-			}
-		}
-	}
-	return orphaned
-}
-
-func (u *persistence) loadRelationState(ctx context.Context, childMapping *entityMapping, parentKeys []Key) (relationState, error) {
-	state := relationState{
-		childKeysByParent: make(map[Key]keySet),
-		parentByChildKey:  make(map[Key]Key),
-	}
+func (u *persistence) loadRelationKeys(ctx context.Context, childMapping *entityMapping, parentKeys []Key) (map[Key]keySet, map[Key]Key, error) {
+	childKeysByParent := make(map[Key]keySet)
+	parentByChildKey := make(map[Key]Key)
 	if len(parentKeys) == 0 {
-		return state, nil
+		return childKeysByParent, parentByChildKey, nil
 	}
 
 	rowSet, err := u.backend.LoadRows(ctx, loadRowsOp{
@@ -336,20 +312,28 @@ func (u *persistence) loadRelationState(ctx context.Context, childMapping *entit
 		keys:          parentKeys,
 	})
 	if err != nil {
-		return state, err
+		return nil, nil, err
 	}
 	defer func() { _ = rowSet.Close() }()
 
 	parentScanned, childScanned, err := scanKeyPairs(rowSet, childMapping.parentalPlan.types, childMapping.primaryPlan.types)
 	if err != nil {
-		return state, err
+		return nil, nil, err
 	}
 
 	for i := range parentScanned {
-		state.add(parentScanned[i], childScanned[i])
+		pk := parentScanned[i]
+		ck := childScanned[i]
+		children := childKeysByParent[pk]
+		if children == nil {
+			children = make(keySet)
+			childKeysByParent[pk] = children
+		}
+		children[ck] = struct{}{}
+		parentByChildKey[ck] = pk
 	}
 
-	return state, nil
+	return childKeysByParent, parentByChildKey, nil
 }
 
 // --- Save Execution ---
