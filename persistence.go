@@ -152,13 +152,12 @@ func (u *persistence) save(ctx context.Context, em *entityMapping, entities []an
 			return err
 		}
 		existing := newKeySet(existingKeys)
-		hasGeneratedKey := len(em.saveLayout.rows.generatedPrimaryIndexes) > 0
 
 		toUpdate = make([]plannedRow, 0, len(candidates))
 		for _, row := range candidates {
 			if _, ok := existing[row.key]; ok {
 				toUpdate = append(toUpdate, row)
-			} else if hasGeneratedKey {
+			} else if em.saveLayout.hasGeneratedKey() {
 				return fmt.Errorf("%w: generated key %v does not exist in %s", ErrStaleEntity, row.key, em.entityType)
 			} else {
 				toInsert = append(toInsert, row)
@@ -202,7 +201,6 @@ func (u *persistence) saveChildRelation(ctx context.Context, parentMapping, chil
 		}
 
 		toInsert := inserts
-		hasGeneratedKey := len(childMapping.saveLayout.rows.generatedPrimaryIndexes) > 0
 		var toUpdate []plannedRow
 
 		for _, row := range candidates {
@@ -212,7 +210,7 @@ func (u *persistence) saveChildRelation(ctx context.Context, parentMapping, chil
 
 			if _, ok := existingChildren[childKey]; ok {
 				toUpdate = append(toUpdate, row)
-			} else if hasGeneratedKey {
+			} else if childMapping.saveLayout.hasGeneratedKey() {
 				return fmt.Errorf("%w: generated key %v does not exist in parent relation for %s", ErrStaleEntity, childKey, childMapping.entityType)
 			} else {
 				if owner, ok := existing.parentByChildKey[childKey]; ok && owner != parentKey {
@@ -250,7 +248,7 @@ func collectSubmittedChildren(parentMapping *entityMapping, parentEntities []any
 		start := len(submitted)
 		submitted = child.appendTo(entity, submitted)
 		for _, childEntity := range submitted[start:] {
-			injectParentalKey(childEntity, childMapping, parentKey)
+			childMapping.injectParentalKey(childEntity, parentKey)
 
 			childKey := childMapping.extractPrimaryKey(childEntity)
 			keep := keepKeys[parentKey]
@@ -265,63 +263,19 @@ func collectSubmittedChildren(parentMapping *entityMapping, parentEntities []any
 	return
 }
 
-func injectParentalKey(childEntity any, childMapping *entityMapping, parentKey Key) {
-	entityValue := reflect.ValueOf(childEntity).Elem()
-	for i, field := range childMapping.parentalPlan.fields {
-		field.setOn(entityValue, parentKey.At(i))
-	}
-}
-
 func projectSaveRows(em *entityMapping, entities []any) (inserts, candidates []plannedRow, err error) {
-	layout := &em.saveLayout.rows
-	hasGeneratedKey := len(layout.generatedPrimaryIndexes) > 0
 	submittedKeys := make(map[Key]int, len(entities))
 
 	for i, entity := range entities {
-		row := make([]any, len(em.saveLayout.rowFields))
-		entityValue := reflect.ValueOf(entity).Elem()
-		for j, field := range em.saveLayout.rowFields {
-			row[j] = field.valueFrom(entityValue)
-		}
-		saveRow := saveRow{values: row}
-		var keyValues [9]any
-		if len(layout.primaryIndexes) > len(keyValues) {
-			panic("ormapper: Key supports up to 9 column values")
-		}
-		for j, idx := range layout.primaryIndexes {
-			keyValues[j] = saveRow.values[idx]
-		}
-		planned := plannedRow{
-			index: i,
-			key:   newKeyFromValues(keyValues[:len(layout.primaryIndexes)]),
-			row:   saveRow,
+		row, key := em.saveLayout.projectEntity(entity)
+		planned := plannedRow{index: i, key: key, row: row}
+
+		insert, err := em.saveLayout.isInsert(row)
+		if err != nil {
+			return nil, nil, err
 		}
 
-		isInsert := false
-		if hasGeneratedKey {
-			zeroGeneratedFields := 0
-			for _, idx := range layout.generatedPrimaryIndexes {
-				value := planned.row.values[idx]
-				if value == nil {
-					zeroGeneratedFields++
-					continue
-				}
-				v := reflect.ValueOf(value)
-				if !v.IsValid() || v.IsZero() {
-					zeroGeneratedFields++
-				}
-			}
-			switch zeroGeneratedFields {
-			case len(layout.generatedPrimaryIndexes):
-				isInsert = true
-			case 0:
-				// non-zero generated key — candidate for update
-			default:
-				return nil, nil, fmt.Errorf("%w: generated primary key fields must be all zero or all non-zero", ErrUnsupportedSemantic)
-			}
-		}
-
-		if isInsert {
+		if insert {
 			inserts = append(inserts, planned)
 		} else {
 			if previous, ok := submittedKeys[planned.key]; ok {
@@ -374,48 +328,25 @@ func (u *persistence) loadRelationState(ctx context.Context, childMapping *entit
 		return state, nil
 	}
 
-	selectColumns := make([]string, 0, len(childMapping.parentalPlan.columns)+len(childMapping.primaryPlan.columns))
-	selectColumns = append(selectColumns, childMapping.parentalPlan.columns...)
-	selectColumns = append(selectColumns, childMapping.primaryPlan.columns...)
-
 	rowSet, err := u.backend.LoadRows(ctx, loadRowsOp{
 		schema:        childMapping.schema,
 		table:         childMapping.table,
-		selectColumns: selectColumns,
+		selectColumns: childMapping.relationColumns,
 		keyColumns:    childMapping.parentalPlan.columns,
 		keys:          parentKeys,
 	})
 	if err != nil {
 		return state, err
 	}
+	defer func() { _ = rowSet.Close() }()
 
-	parentTypes := childMapping.parentalPlan.types
-	childTypes := childMapping.primaryPlan.types
-	parentValues := make([]any, len(parentTypes))
-	childValues := make([]any, len(childTypes))
-	dest := make([]any, 0, len(parentValues)+len(childValues))
-	for i := range parentValues {
-		dest = append(dest, &parentValues[i])
-	}
-	for i := range childValues {
-		dest = append(dest, &childValues[i])
-	}
-
-	for rowSet.Next() {
-		if err := rowSet.Scan(dest...); err != nil {
-			_ = rowSet.Close()
-			return state, err
-		}
-		for i, value := range parentValues {
-			parentValues[i] = coerceScannedValue(normalizeScannedValue(value), parentTypes[i])
-		}
-		for i, value := range childValues {
-			childValues[i] = coerceScannedValue(normalizeScannedValue(value), childTypes[i])
-		}
-		state.add(NewKey(parentValues...), NewKey(childValues...))
-	}
-	if err := rowSet.Close(); err != nil {
+	parentScanned, childScanned, err := scanKeyPairs(rowSet, childMapping.parentalPlan.types, childMapping.primaryPlan.types)
+	if err != nil {
 		return state, err
+	}
+
+	for i := range parentScanned {
+		state.add(parentScanned[i], childScanned[i])
 	}
 
 	return state, nil
@@ -466,7 +397,7 @@ func (u *persistence) savePlannedRows(ctx context.Context, em *entityMapping, en
 		}
 		seen[saved.index] = true
 
-		if err := u.applyReturnedValues(entities[saved.index], em.saveLayout.returningFields, saved.values); err != nil {
+		if err := em.saveLayout.applyReturningValues(entities[saved.index], saved.values); err != nil {
 			return nil, err
 		}
 	}
@@ -491,17 +422,6 @@ func (u *persistence) selectExistingKeys(ctx context.Context, em *entityMapping,
 		keyTypes:   em.primaryPlan.types,
 		keys:       keys,
 	})
-}
-
-func (u *persistence) applyReturnedValues(entity any, fields []*field, values []any) error {
-	if len(values) != len(fields) {
-		return fmt.Errorf("expected %d returned values, got %d", len(fields), len(values))
-	}
-	entityValue := reflect.ValueOf(entity).Elem()
-	for i, field := range fields {
-		field.setOn(entityValue, values[i])
-	}
-	return nil
 }
 
 // --- Delete ---
@@ -554,4 +474,3 @@ func (u *persistence) loadKeysByParentKeys(ctx context.Context, em *entityMappin
 
 	return scanTypedKeys(rowSet, em.primaryPlan.types)
 }
-

@@ -1,6 +1,7 @@
 package ormapper
 
 import (
+	"fmt"
 	"reflect"
 	"slices"
 )
@@ -140,6 +141,64 @@ type saveLayout struct {
 	rows            saveRowsLayout
 }
 
+func (sl *saveLayout) projectEntity(entity any) (saveRow, Key) {
+	entityValue := reflect.ValueOf(entity).Elem()
+	row := make([]any, len(sl.rowFields))
+	for j, field := range sl.rowFields {
+		row[j] = field.valueFrom(entityValue)
+	}
+	var keyValues [9]any
+	if len(sl.rows.primaryIndexes) > len(keyValues) {
+		panic("ormapper: Key supports up to 9 column values")
+	}
+	for j, idx := range sl.rows.primaryIndexes {
+		keyValues[j] = row[idx]
+	}
+	return saveRow{values: row}, newKeyFromValues(keyValues[:len(sl.rows.primaryIndexes)])
+}
+
+func (sl *saveLayout) isInsert(row saveRow) (bool, error) {
+	generatedIndexes := sl.rows.generatedPrimaryIndexes
+	if len(generatedIndexes) == 0 {
+		return false, nil
+	}
+	zeroCount := 0
+	for _, idx := range generatedIndexes {
+		value := row.values[idx]
+		if value == nil {
+			zeroCount++
+			continue
+		}
+		v := reflect.ValueOf(value)
+		if !v.IsValid() || v.IsZero() {
+			zeroCount++
+		}
+	}
+	switch zeroCount {
+	case len(generatedIndexes):
+		return true, nil
+	case 0:
+		return false, nil
+	default:
+		return false, fmt.Errorf("%w: generated primary key fields must be all zero or all non-zero", ErrUnsupportedSemantic)
+	}
+}
+
+func (sl *saveLayout) hasGeneratedKey() bool {
+	return len(sl.rows.generatedPrimaryIndexes) > 0
+}
+
+func (sl *saveLayout) applyReturningValues(entity any, values []any) error {
+	if len(values) != len(sl.returningFields) {
+		return fmt.Errorf("expected %d returned values, got %d", len(sl.returningFields), len(values))
+	}
+	entityValue := reflect.ValueOf(entity).Elem()
+	for i, field := range sl.returningFields {
+		field.setOn(entityValue, values[i])
+	}
+	return nil
+}
+
 type entityMapping struct {
 	entityType  reflect.Type
 	schema      string
@@ -156,6 +215,8 @@ type entityMapping struct {
 	parentalPlan   fieldPlan
 	insertablePlan fieldPlan
 	updatablePlan  fieldPlan
+
+	relationColumns []string // parentalPlan.columns + primaryPlan.columns
 
 	saveLayout *saveLayout
 }
@@ -191,11 +252,45 @@ func newEntityMapping(
 	em.updatablePlan = newFieldPlan(fieldMap, updatable)
 	em.saveLayout = newSaveLayout(fieldMap, allFields, primaryKey, insertable, updatable)
 
+	if len(parentalKey) > 0 {
+		em.relationColumns = make([]string, 0, len(em.parentalPlan.columns)+len(em.primaryPlan.columns))
+		em.relationColumns = append(em.relationColumns, em.parentalPlan.columns...)
+		em.relationColumns = append(em.relationColumns, em.primaryPlan.columns...)
+	}
+
 	return em
 }
 
 func (em *entityMapping) newEntity() any {
 	return reflect.New(em.entityType).Interface()
+}
+
+func (em *entityMapping) extractPrimaryKey(entity any) Key {
+	return extractKeyFromFields(entity, em.primaryPlan.fields)
+}
+
+func (em *entityMapping) extractParentalKey(entity any) Key {
+	return extractKeyFromFields(entity, em.parentalPlan.fields)
+}
+
+func (em *entityMapping) injectParentalKey(entity any, parentKey Key) {
+	entityValue := reflect.ValueOf(entity).Elem()
+	for i, field := range em.parentalPlan.fields {
+		field.setOn(entityValue, parentKey.At(i))
+	}
+}
+
+func extractKeyFromFields(entity any, fields []*field) Key {
+	if len(fields) > 9 {
+		panic("ormapper: Key supports up to 9 column values")
+	}
+
+	entityValue := reflect.ValueOf(entity).Elem()
+	var values [9]any
+	for i, field := range fields {
+		values[i] = field.valueFrom(entityValue)
+	}
+	return newKeyFromValues(values[:len(fields)])
 }
 
 func newSaveLayout(
@@ -273,25 +368,4 @@ func newSaveLayout(
 	}
 
 	return layout
-}
-
-func (em *entityMapping) extractPrimaryKey(entity any) Key {
-	return extractKeyFromFields(entity, em.primaryPlan.fields)
-}
-
-func (em *entityMapping) extractParentalKey(entity any) Key {
-	return extractKeyFromFields(entity, em.parentalPlan.fields)
-}
-
-func extractKeyFromFields(entity any, fields []*field) Key {
-	if len(fields) > 9 {
-		panic("ormapper: Key supports up to 9 column values")
-	}
-
-	entityValue := reflect.ValueOf(entity).Elem()
-	var values [9]any
-	for i, field := range fields {
-		values[i] = field.valueFrom(entityValue)
-	}
-	return newKeyFromValues(values[:len(fields)])
 }

@@ -7,7 +7,7 @@ import (
 
 type emptyRows struct{}
 
-func (e *emptyRows) Next() bool             { return false }
+func (e *emptyRows) Next() bool            { return false }
 func (e *emptyRows) Scan(dest ...any) error { return nil }
 func (e *emptyRows) Close() error           { return nil }
 
@@ -75,6 +75,32 @@ func scanTypedKeys(rowSet rows, keyTypes []reflect.Type) ([]Key, error) {
 	}
 
 	return keys, nil
+}
+
+func scanKeyPairs(rowSet rows, leftTypes, rightTypes []reflect.Type) ([]Key, []Key, error) {
+	leftLen := len(leftTypes)
+	values := make([]any, leftLen+len(rightTypes))
+	dest := make([]any, len(values))
+	for i := range values {
+		dest[i] = &values[i]
+	}
+
+	var leftKeys, rightKeys []Key
+	for rowSet.Next() {
+		if err := rowSet.Scan(dest...); err != nil {
+			return nil, nil, err
+		}
+		for i, value := range values[:leftLen] {
+			values[i] = coerceScannedValue(normalizeScannedValue(value), leftTypes[i])
+		}
+		for i, value := range values[leftLen:] {
+			values[leftLen+i] = coerceScannedValue(normalizeScannedValue(value), rightTypes[i])
+		}
+		leftKeys = append(leftKeys, NewKey(values[:leftLen]...))
+		rightKeys = append(rightKeys, NewKey(values[leftLen:]...))
+	}
+
+	return leftKeys, rightKeys, nil
 }
 
 func scanRowValues(rowSet rows, values []any, dest []any) error {
