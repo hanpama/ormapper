@@ -167,21 +167,66 @@ func (u *persistence) loadChildren(ctx context.Context, em *entityMapping, paren
 }
 
 func (u *persistence) save(ctx context.Context, em *entityMapping, entities []any) ([]saveResult, error) {
-	return u.saveInRelation(ctx, em, entities, nil, nil)
-}
-
-func (u *persistence) saveInRelation(
-	ctx context.Context,
-	em *entityMapping,
-	entities []any,
-	existingChildKeysByParent map[Key]map[Key]struct{},
-	existingParentByChild map[Key]Key,
-) ([]saveResult, error) {
 	if len(entities) == 0 {
 		return nil, nil
 	}
 
-	results, err := u.saveRows(ctx, em, entities, existingChildKeysByParent, existingParentByChild)
+	plannedRows, intents, err := projectSaveRows(em, entities)
+	if err != nil {
+		return nil, err
+	}
+
+	generatedInserts := make([]plannedRow, 0)
+	manualCandidates := make([]plannedRow, 0)
+	generatedUpdates := make([]plannedRow, 0)
+	toInsert := make([]plannedRow, 0, len(entities))
+	toUpdate := make([]plannedRow, 0, len(entities))
+	for i, row := range plannedRows {
+		switch intents[i] {
+		case saveRowGeneratedInsert:
+			generatedInserts = append(generatedInserts, row)
+		case saveRowGeneratedUpdate:
+			generatedUpdates = append(generatedUpdates, row)
+		case saveRowManualKey:
+			manualCandidates = append(manualCandidates, row)
+		}
+	}
+	toInsert = append(toInsert, generatedInserts...)
+
+	if len(manualCandidates) > 0 {
+		existingKeys, err := u.selectExistingKeys(ctx, em, keysFromPlannedRows(manualCandidates))
+		if err != nil {
+			return nil, err
+		}
+		existing := keySet(existingKeys)
+		for _, row := range manualCandidates {
+			if _, ok := existing[row.key]; ok {
+				toUpdate = append(toUpdate, row)
+			} else {
+				toInsert = append(toInsert, row)
+			}
+		}
+	}
+
+	if len(generatedUpdates) > 0 {
+		existingKeys, err := u.selectExistingKeys(ctx, em, keysFromPlannedRows(generatedUpdates))
+		if err != nil {
+			return nil, err
+		}
+		existing := keySet(existingKeys)
+		for _, row := range generatedUpdates {
+			if _, ok := existing[row.key]; !ok {
+				return nil, fmt.Errorf("%w: generated key %v does not exist in %s", ErrStaleEntity, row.key, em.entityType)
+			}
+			toUpdate = append(toUpdate, row)
+		}
+	}
+
+	return u.savePlannedLevel(ctx, em, entities, toInsert, toUpdate)
+}
+
+func (u *persistence) savePlannedLevel(ctx context.Context, em *entityMapping, entities []any, toInsert, toUpdate []plannedRow) ([]saveResult, error) {
+	results, err := u.savePlannedRows(ctx, em, entities, toInsert, toUpdate)
 	if err != nil {
 		return nil, err
 	}
@@ -198,7 +243,7 @@ func (u *persistence) saveInRelation(
 			childCount += child.count(result.entity)
 		}
 
-		toSave := make([]any, 0, childCount)
+		submittedChildren := make([]any, 0, childCount)
 		keepChildKeysByParent := make(map[Key]map[Key]struct{})
 		existingParentKeys := make([]Key, 0, len(results))
 		for _, result := range results {
@@ -206,9 +251,9 @@ func (u *persistence) saveInRelation(
 				existingParentKeys = append(existingParentKeys, result.key)
 			}
 
-			start := len(toSave)
-			toSave = child.appendTo(result.entity, toSave)
-			for _, childEntity := range toSave[start:] {
+			start := len(submittedChildren)
+			submittedChildren = child.appendTo(result.entity, submittedChildren)
+			for _, childEntity := range submittedChildren[start:] {
 				entityValue := reflect.ValueOf(childEntity).Elem()
 				for i, field := range childMapping.parentalPlan.fields {
 					field.setOn(entityValue, result.key.At(i))
@@ -282,8 +327,43 @@ func (u *persistence) saveInRelation(
 			}
 		}
 
-		if len(toSave) > 0 {
-			if _, err := u.saveInRelation(ctx, childMapping, toSave, existingChildKeysByParent, existingParentByChild); err != nil {
+		if len(submittedChildren) > 0 {
+			childRows, childIntents, err := projectSaveRows(childMapping, submittedChildren)
+			if err != nil {
+				return nil, err
+			}
+
+			childGeneratedInserts := make([]plannedRow, 0)
+			childToInsert := make([]plannedRow, 0, len(submittedChildren))
+			childToUpdate := make([]plannedRow, 0, len(submittedChildren))
+			for i, row := range childRows {
+				entity := submittedChildren[row.index]
+				parentKey := childMapping.extractParentalKey(entity)
+				childKey := row.key
+				existingChildren := existingChildKeysByParent[parentKey]
+
+				switch childIntents[i] {
+				case saveRowGeneratedInsert:
+					childGeneratedInserts = append(childGeneratedInserts, row)
+				case saveRowGeneratedUpdate:
+					if _, ok := existingChildren[childKey]; !ok {
+						return nil, fmt.Errorf("%w: generated key %v does not exist in parent relation for %s", ErrStaleEntity, childKey, childMapping.entityType)
+					}
+					childToUpdate = append(childToUpdate, row)
+				case saveRowManualKey:
+					if _, ok := existingChildren[childKey]; ok {
+						childToUpdate = append(childToUpdate, row)
+					} else {
+						if owner, ok := existingParentByChild[childKey]; ok && owner != parentKey {
+							return nil, fmt.Errorf("%w: key %v already exists under a different parent in %s", ErrConsistency, childKey, childMapping.entityType)
+						}
+						childToInsert = append(childToInsert, row)
+					}
+				}
+			}
+			childToInsert = append(childToInsert, childGeneratedInserts...)
+
+			if _, err := u.savePlannedLevel(ctx, childMapping, submittedChildren, childToInsert, childToUpdate); err != nil {
 				return nil, err
 			}
 		}
@@ -322,25 +402,11 @@ func keySet(keys []Key) map[Key]struct{} {
 	return result
 }
 
-func (u *persistence) saveRows(
-	ctx context.Context,
-	em *entityMapping,
-	entities []any,
-	existingChildKeysByParent map[Key]map[Key]struct{},
-	existingParentByChild map[Key]Key,
-) ([]saveResult, error) {
-	saveOp := saveRowsOp{
-		schema: em.schema,
-		table:  em.table,
-		layout: &em.saveLayout.rows,
-	}
-	generatedInserts := make([]plannedRow, 0)
-	manualCandidates := make([]plannedRow, 0)
-	generatedUpdates := make([]plannedRow, 0)
-	toInsert := make([]plannedRow, 0, len(entities))
-	toUpdate := make([]plannedRow, 0, len(entities))
+func projectSaveRows(em *entityMapping, entities []any) ([]plannedRow, []saveRowIntent, error) {
+	layout := &em.saveLayout.rows
+	rows := make([]plannedRow, len(entities))
+	intents := make([]saveRowIntent, len(entities))
 	submittedKeys := make(map[Key]int, len(entities))
-	inParentRelation := existingChildKeysByParent != nil
 
 	for i, entity := range entities {
 		row := make([]any, len(em.saveLayout.rowFields))
@@ -350,20 +416,20 @@ func (u *persistence) saveRows(
 		}
 		saveRow := saveRow{values: row}
 		var keyValues [9]any
-		if len(saveOp.layout.primaryIndexes) > len(keyValues) {
+		if len(layout.primaryIndexes) > len(keyValues) {
 			panic("ormapper: Key supports up to 9 column values")
 		}
-		for j, idx := range saveOp.layout.primaryIndexes {
+		for j, idx := range layout.primaryIndexes {
 			keyValues[j] = saveRow.values[idx]
 		}
 		planned := plannedRow{
 			index: i,
-			key:   newKeyFromValues(keyValues[:len(saveOp.layout.primaryIndexes)]),
+			key:   newKeyFromValues(keyValues[:len(layout.primaryIndexes)]),
 			row:   saveRow,
 		}
 
 		intent := saveRowManualKey
-		generatedIndexes := saveOp.layout.generatedPrimaryIndexes
+		generatedIndexes := layout.generatedPrimaryIndexes
 		if len(generatedIndexes) > 0 {
 			zeroGeneratedFields := 0
 			for _, idx := range generatedIndexes {
@@ -383,78 +449,27 @@ func (u *persistence) saveRows(
 			case 0:
 				intent = saveRowGeneratedUpdate
 			default:
-				return nil, fmt.Errorf("%w: generated primary key fields must be all zero or all non-zero", ErrUnsupportedSemantic)
+				return nil, nil, fmt.Errorf("%w: generated primary key fields must be all zero or all non-zero", ErrUnsupportedSemantic)
 			}
 		}
 		if intent != saveRowGeneratedInsert {
 			if previous, ok := submittedKeys[planned.key]; ok {
-				return nil, fmt.Errorf("%w: duplicate submitted key %v at entity indexes %d and %d", ErrConsistency, planned.key, previous, i)
+				return nil, nil, fmt.Errorf("%w: duplicate submitted key %v at entity indexes %d and %d", ErrConsistency, planned.key, previous, i)
 			}
 			submittedKeys[planned.key] = i
 		}
-		switch intent {
-		case saveRowGeneratedInsert:
-			generatedInserts = append(generatedInserts, planned)
-		case saveRowGeneratedUpdate:
-			if !inParentRelation {
-				generatedUpdates = append(generatedUpdates, planned)
-				continue
-			}
-			parentKey := em.extractParentalKey(entity)
-			childKey := planned.key
-			existingChildren := existingChildKeysByParent[parentKey]
-			if _, ok := existingChildren[childKey]; !ok {
-				return nil, fmt.Errorf("%w: generated key %v does not exist in parent relation for %s", ErrStaleEntity, childKey, em.entityType)
-			}
-			toUpdate = append(toUpdate, planned)
-		case saveRowManualKey:
-			if !inParentRelation {
-				manualCandidates = append(manualCandidates, planned)
-				continue
-			}
-			parentKey := em.extractParentalKey(entity)
-			childKey := planned.key
-			existingChildren := existingChildKeysByParent[parentKey]
-			if _, ok := existingChildren[childKey]; ok {
-				toUpdate = append(toUpdate, planned)
-			} else {
-				if owner, ok := existingParentByChild[childKey]; ok && owner != parentKey {
-					return nil, fmt.Errorf("%w: key %v already exists under a different parent in %s", ErrConsistency, childKey, em.entityType)
-				}
-				toInsert = append(toInsert, planned)
-			}
-		}
+		rows[i] = planned
+		intents[i] = intent
 	}
 
-	toInsert = append(toInsert, generatedInserts...)
+	return rows, intents, nil
+}
 
-	if len(manualCandidates) > 0 {
-		existingKeys, err := u.selectExistingKeys(ctx, em, keysFromPlannedRows(manualCandidates))
-		if err != nil {
-			return nil, err
-		}
-		existing := keySet(existingKeys)
-		for _, row := range manualCandidates {
-			if _, ok := existing[row.key]; ok {
-				toUpdate = append(toUpdate, row)
-			} else {
-				toInsert = append(toInsert, row)
-			}
-		}
-	}
-
-	if len(generatedUpdates) > 0 {
-		existingKeys, err := u.selectExistingKeys(ctx, em, keysFromPlannedRows(generatedUpdates))
-		if err != nil {
-			return nil, err
-		}
-		existing := keySet(existingKeys)
-		for _, row := range generatedUpdates {
-			if _, ok := existing[row.key]; !ok {
-				return nil, fmt.Errorf("%w: generated key %v does not exist in %s", ErrStaleEntity, row.key, em.entityType)
-			}
-			toUpdate = append(toUpdate, row)
-		}
+func (u *persistence) savePlannedRows(ctx context.Context, em *entityMapping, entities []any, toInsert, toUpdate []plannedRow) ([]saveResult, error) {
+	saveOp := saveRowsOp{
+		schema: em.schema,
+		table:  em.table,
+		layout: &em.saveLayout.rows,
 	}
 
 	savedRows := make([]savedRow, 0, len(entities))

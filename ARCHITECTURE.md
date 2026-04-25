@@ -101,19 +101,22 @@ scan 이후 다른 transaction이 row를 삭제하면 update/delete 단계에서
 Save orchestration:
 
 ```text
-saveLevel(mapping, entities)
+saveRoot(mapping, entities)
 
 1. classify entities by key intent
 2. batch scan existing keys for root/global entities that need DB existence judgment
 3. build toInsert and toUpdate
+
+savePlannedLevel(mapping, entities, toInsert, toUpdate)
+
 4. batch insert toInsert
 5. batch update toUpdate
 6. backfill returned values
 7. for each child relation in struct field order:
    a. inject parent key into submitted child entities
    b. load existing child primary keys by saved parent keys
-   c. use that relation state to plan child insert/update/delete
-   d. saveLevel(childMapping, submitted children, relation state)
+   c. use that relation state to build childToInsert, childToUpdate, and childToDelete
+   d. savePlannedLevel(childMapping, submitted children, childToInsert, childToUpdate)
    e. deleteByKeys(childMapping, relation-state keys absent from submitted graph)
 ```
 
@@ -121,6 +124,7 @@ saveLevel(mapping, entities)
 
 - child의 update existence는 global PK가 아니라 현재 parent relation 안에서 판단한다.
 - relation state scan 하나가 child insert/update/delete 판단에 모두 쓰인다.
+- relation state는 recursive save 인자가 아니다. child relation을 처리하는 함수 실행 맥락에서 `childToInsert`, `childToUpdate`, `childToDelete`로 즉시 소모된다.
 - leaf child도 `relation state diff -> deleteByKeys` 경로를 탄다.
 - leaf shortcut delete는 없다. 단순성을 팔아 작은 statement 절약을 사지 않는다.
 
@@ -551,6 +555,12 @@ Leaf shortcut is intentionally absent.
 - Use relation state as the child save existence basis.
 - Compute delete keys in the common planner by diffing relation state against submitted keep pairs.
 - Treat generated child PK non-zero outside the current parent relation as `ErrStaleEntity`.
+
+### Phase 7: Planned level recursion [done]
+
+- Root save performs global existence classification once and calls `savePlannedLevel` with `toInsert` and `toUpdate`.
+- Child relation loops classify submitted children in the same context that loaded relation state.
+- Recursive save receives already-split child insert/update plans, not relation state maps or an undifferentiated `toSave` list.
 
 ## 9. Non-Goals
 
