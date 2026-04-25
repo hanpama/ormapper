@@ -18,10 +18,9 @@ type saveResult struct {
 	inserted bool
 }
 
-type relationSnapshot struct {
-	childMapping *entityMapping
-	parentKeys   []Key
-	keepPairs    []keepPair
+type relationState struct {
+	byParent      map[Key]map[Key]struct{}
+	parentByChild map[Key]Key
 }
 
 func newPersistence(registry mappingRegistry, backend backend) *persistence {
@@ -164,11 +163,15 @@ func (u *persistence) loadChildren(ctx context.Context, em *entityMapping, paren
 }
 
 func (u *persistence) save(ctx context.Context, em *entityMapping, entities []any) ([]saveResult, error) {
+	return u.saveInRelation(ctx, em, entities, nil)
+}
+
+func (u *persistence) saveInRelation(ctx context.Context, em *entityMapping, entities []any, relation *relationState) ([]saveResult, error) {
 	if len(entities) == 0 {
 		return nil, nil
 	}
 
-	results, err := u.saveRows(ctx, em, entities)
+	results, err := u.saveRows(ctx, em, entities, relation)
 	if err != nil {
 		return nil, err
 	}
@@ -181,14 +184,17 @@ func (u *persistence) save(ctx context.Context, em *entityMapping, entities []an
 		}
 
 		toSave := buildChildSaveSet(childMapping, child, results)
+		relationState, err := u.loadRelationState(ctx, childMapping, existingParentKeys(results))
+		if err != nil {
+			return nil, err
+		}
 		if len(toSave) > 0 {
-			if _, err := u.save(ctx, childMapping, toSave); err != nil {
+			if _, err := u.saveInRelation(ctx, childMapping, toSave, relationState); err != nil {
 				return nil, err
 			}
 		}
 
-		snapshot := buildRelationSnapshot(childMapping, child, results)
-		if err := u.deleteMissingChildren(ctx, snapshot); err != nil {
+		if err := u.deleteByKeys(ctx, childMapping, relationState.missing(buildKeepPairs(childMapping, child, results))); err != nil {
 			return nil, err
 		}
 	}
@@ -208,27 +214,28 @@ func buildChildSaveSet(childMapping *entityMapping, relation *child, parents []s
 	return toSave
 }
 
-func buildRelationSnapshot(childMapping *entityMapping, relation *child, parents []saveResult) relationSnapshot {
-	snapshot := relationSnapshot{
-		childMapping: childMapping,
-		parentKeys:   make([]Key, 0, len(parents)),
-		keepPairs:    make([]keepPair, 0),
-	}
-
+func existingParentKeys(parents []saveResult) []Key {
+	keys := make([]Key, 0, len(parents))
 	for _, result := range parents {
 		if result.inserted {
 			continue
 		}
-		snapshot.parentKeys = append(snapshot.parentKeys, result.key)
+		keys = append(keys, result.key)
+	}
+	return keys
+}
+
+func buildKeepPairs(childMapping *entityMapping, relation *child, parents []saveResult) []keepPair {
+	keepPairs := make([]keepPair, 0)
+	for _, result := range parents {
 		for _, childEntity := range relation.get(result.entity) {
-			snapshot.keepPairs = append(snapshot.keepPairs, keepPair{
+			keepPairs = append(keepPairs, keepPair{
 				parentKey: result.key,
 				childKey:  childMapping.extractKey(childEntity, childMapping.primaryKey),
 			})
 		}
 	}
-
-	return snapshot
+	return keepPairs
 }
 
 func injectParentKey(childMapping *entityMapping, childEntity any, parentKey Key) {
@@ -237,24 +244,111 @@ func injectParentKey(childMapping *entityMapping, childEntity any, parentKey Key
 	}
 }
 
-func (u *persistence) deleteMissingChildren(ctx context.Context, snapshot relationSnapshot) error {
-	op := selectMissingChildrenOp{
-		schema:           snapshot.childMapping.schema,
-		table:            snapshot.childMapping.table,
-		parentKeyColumns: snapshot.childMapping.parentalColumns,
-		childKeyColumns:  snapshot.childMapping.primaryColumns,
-		parentKeys:       snapshot.parentKeys,
-		keepPairs:        snapshot.keepPairs,
+func newRelationState() *relationState {
+	return &relationState{
+		byParent:      make(map[Key]map[Key]struct{}),
+		parentByChild: make(map[Key]Key),
 	}
-
-	toDelete, err := u.backend.SelectMissingChildren(ctx, op)
-	if err != nil {
-		return err
-	}
-	return u.deleteByKeys(ctx, snapshot.childMapping, toDelete)
 }
 
-func (u *persistence) saveRows(ctx context.Context, em *entityMapping, entities []any) ([]saveResult, error) {
+func (s *relationState) add(parentKey, childKey Key) {
+	children := s.byParent[parentKey]
+	if children == nil {
+		children = make(map[Key]struct{})
+		s.byParent[parentKey] = children
+	}
+	children[childKey] = struct{}{}
+	s.parentByChild[childKey] = parentKey
+}
+
+func (s *relationState) contains(parentKey, childKey Key) bool {
+	children := s.byParent[parentKey]
+	if children == nil {
+		return false
+	}
+	_, ok := children[childKey]
+	return ok
+}
+
+func (s *relationState) parentOf(childKey Key) (Key, bool) {
+	parentKey, ok := s.parentByChild[childKey]
+	return parentKey, ok
+}
+
+func (s *relationState) missing(keepPairs []keepPair) []Key {
+	keepByParent := make(map[Key]map[Key]struct{})
+	for _, pair := range keepPairs {
+		children := keepByParent[pair.parentKey]
+		if children == nil {
+			children = make(map[Key]struct{})
+			keepByParent[pair.parentKey] = children
+		}
+		children[pair.childKey] = struct{}{}
+	}
+
+	missing := make([]Key, 0)
+	for parentKey, children := range s.byParent {
+		keep := keepByParent[parentKey]
+		for childKey := range children {
+			if _, ok := keep[childKey]; !ok {
+				missing = append(missing, childKey)
+			}
+		}
+	}
+	return missing
+}
+
+func (u *persistence) loadRelationState(ctx context.Context, em *entityMapping, parentKeys []Key) (*relationState, error) {
+	state := newRelationState()
+	parentKeys = uniqueKeys(parentKeys)
+	if len(parentKeys) == 0 {
+		return state, nil
+	}
+
+	selectColumns := make([]string, 0, len(em.parentalColumns)+len(em.primaryColumns))
+	selectColumns = append(selectColumns, em.parentalColumns...)
+	selectColumns = append(selectColumns, em.primaryColumns...)
+
+	rowSet, err := u.backend.LoadByParentKeys(ctx, loadRowsOp{
+		schema:        em.schema,
+		table:         em.table,
+		selectColumns: selectColumns,
+		keyColumns:    em.parentalColumns,
+		keys:          parentKeys,
+	})
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rowSet.Close() }()
+
+	parentTypes := em.fieldTypes(em.parentalKey)
+	childTypes := em.fieldTypes(em.primaryKey)
+	for rowSet.Next() {
+		parentValues := make([]any, len(parentTypes))
+		childValues := make([]any, len(childTypes))
+		dest := make([]any, 0, len(parentValues)+len(childValues))
+		for i := range parentValues {
+			dest = append(dest, &parentValues[i])
+		}
+		for i := range childValues {
+			dest = append(dest, &childValues[i])
+		}
+		if err := rowSet.Scan(dest...); err != nil {
+			return nil, err
+		}
+		for i, value := range parentValues {
+			parentValues[i] = coerceValue(normalizeScannedValue(value), parentTypes[i])
+		}
+		for i, value := range childValues {
+			childValues[i] = coerceValue(normalizeScannedValue(value), childTypes[i])
+		}
+		state.add(NewKey(parentValues...), NewKey(childValues...))
+	}
+
+	return state, nil
+}
+
+func (u *persistence) saveRows(ctx context.Context, em *entityMapping, entities []any, relation *relationState) ([]saveResult, error) {
 	saveFields := em.saveFields
 	saveOp := saveRowsOp{
 		schema:    em.schema,
@@ -265,6 +359,8 @@ func (u *persistence) saveRows(ctx context.Context, em *entityMapping, entities 
 	generatedInserts := make([]plannedRow, 0)
 	manualCandidates := make([]plannedRow, 0)
 	generatedUpdates := make([]plannedRow, 0)
+	insertRows := make([]plannedRow, 0, len(entities))
+	updateRows := make([]plannedRow, 0, len(entities))
 
 	for i, entity := range entities {
 		row := make([]any, len(saveFields))
@@ -280,15 +376,35 @@ func (u *persistence) saveRows(ctx context.Context, em *entityMapping, entities 
 		case saveRowGeneratedInsert:
 			generatedInserts = append(generatedInserts, planned)
 		case saveRowGeneratedUpdate:
-			generatedUpdates = append(generatedUpdates, planned)
+			if relation == nil {
+				generatedUpdates = append(generatedUpdates, planned)
+				continue
+			}
+			parentKey := em.extractKey(entity, em.parentalKey)
+			childKey := saveOp.keyFromRow(planned.row)
+			if !relation.contains(parentKey, childKey) {
+				return nil, fmt.Errorf("%w: generated key %v does not exist in parent relation for %s", ErrStaleEntity, childKey, em.entityType)
+			}
+			updateRows = append(updateRows, planned)
 		case saveRowManualKey:
-			manualCandidates = append(manualCandidates, planned)
+			if relation == nil {
+				manualCandidates = append(manualCandidates, planned)
+				continue
+			}
+			parentKey := em.extractKey(entity, em.parentalKey)
+			childKey := saveOp.keyFromRow(planned.row)
+			if relation.contains(parentKey, childKey) {
+				updateRows = append(updateRows, planned)
+			} else {
+				if owner, ok := relation.parentOf(childKey); ok && owner != parentKey {
+					return nil, fmt.Errorf("%w: key %v already exists under a different parent in %s", ErrConsistency, childKey, em.entityType)
+				}
+				insertRows = append(insertRows, planned)
+			}
 		}
 	}
 
-	insertRows := make([]plannedRow, 0, len(generatedInserts)+len(manualCandidates))
 	insertRows = append(insertRows, generatedInserts...)
-	updateRows := make([]plannedRow, 0, len(generatedUpdates)+len(manualCandidates))
 
 	if len(manualCandidates) > 0 {
 		existingKeys, err := u.selectExistingKeys(ctx, em, keysFromPlannedRows(saveOp, manualCandidates))

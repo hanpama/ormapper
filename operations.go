@@ -65,15 +65,6 @@ type keepPair struct {
 	childKey  Key
 }
 
-type selectMissingChildrenOp struct {
-	schema           string
-	table            string
-	parentKeyColumns []string
-	childKeyColumns  []string
-	parentKeys       []Key
-	keepPairs        []keepPair
-}
-
 type deleteRowsOp struct {
 	schema     string
 	table      string

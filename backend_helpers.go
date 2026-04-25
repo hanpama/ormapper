@@ -155,21 +155,6 @@ func int64FromDB(value any) (int64, error) {
 	}
 }
 
-func keepRowsFromPairs(pairs []keepPair) [][]any {
-	keepRows := make([][]any, len(pairs))
-	for i, pair := range pairs {
-		row := make([]any, 0, pair.parentKey.Length()+pair.childKey.Length())
-		for j := 0; j < pair.parentKey.Length(); j++ {
-			row = append(row, pair.parentKey.At(j))
-		}
-		for j := 0; j < pair.childKey.Length(); j++ {
-			row = append(row, pair.childKey.At(j))
-		}
-		keepRows[i] = row
-	}
-	return keepRows
-}
-
 func rowsFromKeys(keys []Key) [][]any {
 	if len(keys) == 0 {
 		return nil
@@ -185,30 +170,6 @@ func rowsFromKeys(keys []Key) [][]any {
 	}
 
 	return values
-}
-
-func scanKeys(rowSet rows, keyColumns int) ([]Key, error) {
-	if keyColumns == 0 {
-		return nil, nil
-	}
-
-	keys := make([]Key, 0)
-	for rowSet.Next() {
-		values := make([]any, keyColumns)
-		dest := make([]any, keyColumns)
-		for i := range values {
-			dest[i] = &values[i]
-		}
-		if err := rowSet.Scan(dest...); err != nil {
-			return nil, err
-		}
-		for i, value := range values {
-			values[i] = normalizeScannedValue(value)
-		}
-		keys = append(keys, NewKey(values...))
-	}
-
-	return keys, nil
 }
 
 func scanTypedKeys(rowSet rows, keyTypes []reflect.Type) ([]Key, error) {

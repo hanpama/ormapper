@@ -104,23 +104,25 @@ Save orchestration:
 saveLevel(mapping, entities)
 
 1. classify entities by key intent
-2. batch scan existing keys for entities that need DB existence judgment
+2. batch scan existing keys for root/global entities that need DB existence judgment
 3. build toInsert and toUpdate
 4. batch insert toInsert
 5. batch update toUpdate
 6. backfill returned values
 7. for each child relation in struct field order:
    a. inject parent key into submitted child entities
-   b. saveLevel(childMapping, submitted children)
-   c. relation-wide select missing child keys
-   d. deleteByKeys(childMapping, missing child keys)
+   b. load existing child primary keys by saved parent keys
+   c. use that relation state to plan child insert/update/delete
+   d. saveLevel(childMapping, submitted children, relation state)
+   e. deleteByKeys(childMapping, relation-state keys absent from submitted graph)
 ```
 
 중요:
 
-- `relation-wide select missing child keys`는 leaf/non-leaf 모두 동일하다.
-- leaf child도 `select missing keys -> deleteByKeys` 경로를 탄다.
-- leaf shortcut delete는 제거한다. 단순성을 팔아 작은 statement 절약을 사지 않는다.
+- child의 update existence는 global PK가 아니라 현재 parent relation 안에서 판단한다.
+- relation state scan 하나가 child insert/update/delete 판단에 모두 쓰인다.
+- leaf child도 `relation state diff -> deleteByKeys` 경로를 탄다.
+- leaf shortcut delete는 없다. 단순성을 팔아 작은 statement 절약을 사지 않는다.
 
 ### 3.2 Delete
 
@@ -164,14 +166,14 @@ generated primary key가 여러 개이고 일부만 zero인 경우
 generated/manual mixed composite key 중 dialect가 batch key allocation을 지원하지 않는 경우
 ```
 
-Manual key candidate는 batch existence scan으로 분리한다.
+Root/global manual key candidate는 batch existence scan으로 분리한다.
 
 ```text
 manual existing => toUpdate
 manual missing  => toInsert
 ```
 
-Auto update candidate는 batch existence scan으로 검증한다.
+Root/global auto update candidate는 batch existence scan으로 검증한다.
 
 ```text
 auto existing => toUpdate
@@ -180,14 +182,25 @@ auto missing  => ErrStaleEntity
 
 Generated insert candidate는 existence scan을 하지 않는다. insert 때 auto fields는 제외하고 dialect가 key를 batch로 배정한다.
 
-### 4.2 Relation Reconcile
+### 4.2 Relation State Reconcile
 
-Relation reconcile은 항상 key selection이다.
+Child relation은 parent key로 기존 child key들을 먼저 batch load한다.
 
 ```text
-SelectMissingChildren(parentKeys, keepPairs) => []childPrimaryKey
-DeleteByKeys(childPrimaryKey)
+LoadByParentKeys(parentKeys, select parentKey + childPrimaryKey) => relationState
 ```
+
+그 relation state 하나로 세 가지 판단을 모두 수행한다.
+
+```text
+submitted child key exists under submitted parent => toUpdate
+submitted child key absent under submitted parent => toInsert or ErrStaleEntity
+existing child key absent from submitted graph    => toDelete
+```
+
+Generated child PK가 non-zero인데 현재 parent relation 안에 없으면 `ErrStaleEntity`다. 이는 reparent를 암묵적 update로 해석하지 않겠다는 뜻이다.
+
+Manual child PK가 현재 parent relation 안에 없으면 insert 후보가 된다. 같은 save batch의 다른 scanned parent 밑에 같은 child PK가 이미 있으면 consistency error다. Batch 밖의 global conflict는 DB unique constraint가 잡는다.
 
 이 규칙은 leaf와 non-leaf 모두 같다.
 
@@ -196,6 +209,7 @@ DeleteByKeys(childPrimaryKey)
 - delete path가 하나다.
 - FK restrict/no action에서도 descendants를 먼저 지운다.
 - SQL flow가 설명 가능하다.
+- child save의 existing scan과 delete reconcile scan이 하나로 합쳐진다.
 - engine-specific optimization이 public planner를 갈라놓지 않는다.
 
 ## 5. Backend Boundary
@@ -206,7 +220,7 @@ DeleteByKeys(childPrimaryKey)
 - graph traversal
 - parent key injection
 - entity classification
-- relation snapshot 생성
+- relation state 생성과 diff
 - insert/update/delete 순서 결정
 - consistency error 판단
 
@@ -215,9 +229,9 @@ Dialect 책임:
 - high-level op를 batch SQL로 렌더링
 - generated insert key allocation과 input correlation
 - batch existing key scan
+- batch relation key load
 - batch insert
 - batch update with returning or affected-row verification
-- relation missing key select
 - delete by key
 
 목표 backend interface:
@@ -231,7 +245,6 @@ type backend interface {
     InsertRows(ctx context.Context, op saveRowsOp, rows []plannedRow) ([]savedRow, error)
     UpdateRows(ctx context.Context, op saveRowsOp, rows []plannedRow) ([]savedRow, error)
 
-    SelectMissingChildren(ctx context.Context, op selectMissingChildrenOp) ([]Key, error)
     DeleteRowsByKeys(ctx context.Context, op deleteRowsOp) error
 
     FetchQuery(ctx context.Context, stmt sqlQuery) (rows, error)
@@ -350,23 +363,23 @@ RETURNING returning_cols...
 
 Update must return exactly the planned keys. Missing returned keys are consistency errors.
 
-### 6.5 Relation Missing Key Select
+### 6.5 Relation Existing Key Load
 
-Same for leaf and non-leaf relations.
+Same for leaf and non-leaf relations. The selected parent key columns and child
+primary key columns are scanned into a relation state map in the common planner.
 
 ```sql
-WITH parent_rows (p...) AS (VALUES ...),
-keep_rows (p..., c...) AS (VALUES ...)
-SELECT child.pk...
+WITH keys (parent_key...) AS (VALUES ...)
+SELECT child.parent_key..., child.pk...
 FROM child
-JOIN parent_rows ON child.parent_fk = parent_rows.p
-LEFT JOIN keep_rows
-  ON keep_rows.parent_fk = child.parent_fk
- AND keep_rows.child_pk = child.pk
-WHERE keep_rows.child_pk IS NULL
+JOIN keys ON child.parent_key = keys.parent_key
 ```
 
-If keep set is empty, select all direct child keys under the parent keys.
+The planner computes missing child keys in memory:
+
+```text
+existing relation keys - submitted keep pairs => delete keys
+```
 
 ### 6.6 Delete By Keys
 
@@ -398,17 +411,14 @@ With existing root, existing note, one existing item kept, one new item, one rem
 ```text
 EXISTS orders
 UPDATE orders
-EXISTS order_notes
+LOAD order_notes
 UPDATE order_notes
-MISSING order_notes
-EXISTS order_items
+LOAD order_items
 INSERT order_items
 UPDATE order_items
-EXISTS order_item_lots
+LOAD order_item_lots
 INSERT order_item_lots
 UPDATE order_item_lots
-MISSING order_item_lots
-MISSING order_items
 LOAD order_item_lots
 DELETE order_item_lots
 DELETE order_items
@@ -416,7 +426,7 @@ DELETE order_items
 
 Notes:
 
-- leaf relation also uses `MISSING -> DeleteByKeys`.
+- leaf relation also uses `relation state diff -> DeleteByKeys`.
 - delete recursion always goes through `deleteByKeys`.
 - Empty delete key sets produce no SQL.
 
@@ -425,9 +435,9 @@ Notes:
 ```text
 EXISTS orders
 UPDATE orders
-MISSING order_notes
+LOAD order_notes
 DELETE order_notes
-MISSING order_items
+LOAD order_items
 ```
 
 ### 7.4 Explicit Auto Root ID
@@ -444,10 +454,9 @@ If row 1000 exists:
 ```text
 EXISTS orders
 UPDATE orders
+LOAD order_notes
 INSERT order_notes
-MISSING order_notes
-DELETE order_notes
-MISSING order_items
+LOAD order_items
 ```
 
 ### 7.5 Delete Aggregate
@@ -468,10 +477,9 @@ Leaf shortcut is intentionally absent.
 
 ### Phase 1: Remove leaf shortcuts [done]
 
-- `deleteMissingChildren` always selects missing child keys and calls `deleteByKeys`.
+- Missing children always flow through `deleteByKeys`.
 - `deleteByKeys` always loads child keys by parent keys before recursive delete.
 - Remove `reconcileDeleteMissingRows`.
-- Rename `ReconcileChildren` to `SelectMissingChildren`.
 - Update SQL flow contracts and documentation.
 
 ### Phase 2: Split save primitive [done]
@@ -497,7 +505,7 @@ Leaf shortcut is intentionally absent.
 - Change `ExplicitGeneratedRoot` to expect consistency error when row is missing.
 - Add test for manual key missing insert.
 - Add test for manual key existing update.
-- Add test for leaf relation still using select-missing path.
+- Add test for leaf relation still using the common delete path.
 - Add SQL flow fixture updates for new sequence.
 
 ### Phase 5: Benchmark and cleanup [done]
@@ -506,6 +514,14 @@ Leaf shortcut is intentionally absent.
 - Re-run Postgres aggregate benchmark.
 - Remove remaining obsolete helper names.
 - Confirm no row-by-row execution exists.
+
+### Phase 6: Relation state reconcile [done]
+
+- Remove `SelectMissingChildren` as a backend primitive.
+- Load relation state by parent keys before saving submitted children.
+- Use relation state as the child save existence basis.
+- Compute delete keys in the common planner by diffing relation state against submitted keep pairs.
+- Treat generated child PK non-zero outside the current parent relation as `ErrStaleEntity`.
 
 ## 9. Non-Goals
 

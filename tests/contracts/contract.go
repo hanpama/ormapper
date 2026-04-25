@@ -27,6 +27,7 @@ func Run(t *testing.T, f Fixture) {
 		t.Run("Composite", func(t *testing.T) { runComposite(t, f) })
 		t.Run("SpecialQuote", func(t *testing.T) { runSpecialQuote(t, f) })
 		t.Run("AggregateSave", func(t *testing.T) { runAggregateSave(t, f) })
+		t.Run("GeneratedChildMustExistUnderParent", func(t *testing.T) { runGeneratedChildMustExistUnderParent(t, f) })
 		t.Run("SingularChildNilDeletes", func(t *testing.T) { runSingularChildNilDeletes(t, f) })
 		t.Run("IdentifyingChild", func(t *testing.T) { runIdentifyingChild(t, f) })
 		t.Run("DeleteAggregate", func(t *testing.T) { runDeleteAggregate(t, f) })
@@ -352,6 +353,38 @@ func runSingularChildNilDeletes(t *testing.T, f Fixture) {
 	}
 }
 
+func runGeneratedChildMustExistUnderParent(t *testing.T, f Fixture) {
+	ctx := reset(t, f)
+	m := mapperFor(f.Dialect)
+
+	source := &order{
+		CustomerID: 10,
+		Total:      10,
+		Items:      []*orderItem{{Name: "source", Qty: 1}},
+	}
+	target := &order{
+		CustomerID: 20,
+		Total:      20,
+	}
+	if err := m.Save(ctx, f.DB, source); err != nil {
+		t.Fatalf("Save source aggregate: %v", err)
+	}
+	if err := m.Save(ctx, f.DB, target); err != nil {
+		t.Fatalf("Save target aggregate: %v", err)
+	}
+
+	moved := source.Items[0]
+	target.Items = []*orderItem{moved}
+	if err := m.Save(ctx, f.DB, target); !errors.Is(err, ormapper.ErrStaleEntity) {
+		t.Fatalf("expected stale generated child error, got %v", err)
+	}
+
+	rows := countRows(t, ctx, f.DB, "SELECT COUNT(*) FROM order_items WHERE id = "+f.Placeholder(1)+" AND order_id = "+f.Placeholder(2), moved.ID, source.ID)
+	if rows != 1 {
+		t.Fatal("failed child reparent attempt should not move the stored row")
+	}
+}
+
 func runIdentifyingChild(t *testing.T, f Fixture) {
 	ctx := reset(t, f)
 	m := mapperFor(f.Dialect)
@@ -469,17 +502,14 @@ func runAggregateSQLFlow(t *testing.T, f Fixture) {
 		assertSQLFlow(t, got, []string{
 			"EXISTS orders",
 			"UPDATE orders",
-			"EXISTS order_notes",
+			"LOAD order_notes",
 			"UPDATE order_notes",
-			"MISSING order_notes",
-			"EXISTS order_items",
+			"LOAD order_items",
 			"INSERT order_items",
 			"UPDATE order_items",
-			"EXISTS order_item_lots",
+			"LOAD order_item_lots",
 			"INSERT order_item_lots",
 			"UPDATE order_item_lots",
-			"MISSING order_item_lots",
-			"MISSING order_items",
 			"LOAD order_item_lots",
 			"DELETE order_item_lots",
 			"DELETE order_items",
@@ -509,9 +539,9 @@ func runAggregateSQLFlow(t *testing.T, f Fixture) {
 		assertSQLFlow(t, got, []string{
 			"EXISTS orders",
 			"UPDATE orders",
-			"MISSING order_notes",
+			"LOAD order_notes",
 			"DELETE order_notes",
-			"MISSING order_items",
+			"LOAD order_items",
 		})
 	})
 

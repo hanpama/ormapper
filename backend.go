@@ -40,7 +40,6 @@ type backend interface {
 	SelectExistingKeys(ctx context.Context, op keyScanOp) ([]Key, error)
 	InsertRows(ctx context.Context, op saveRowsOp, rows []plannedRow) ([]savedRow, error)
 	UpdateRows(ctx context.Context, op saveRowsOp, rows []plannedRow) ([]savedRow, error)
-	SelectMissingChildren(ctx context.Context, op selectMissingChildrenOp) ([]Key, error)
 	DeleteRowsByKeys(ctx context.Context, op deleteRowsOp) error
 	FetchQuery(ctx context.Context, stmt sqlQuery) (rows, error)
 	CountQuery(ctx context.Context, stmt sqlQuery) (int64, error)
