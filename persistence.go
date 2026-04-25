@@ -339,14 +339,10 @@ func (u *persistence) loadRelationKeys(ctx context.Context, childMapping *entity
 // --- Save Execution ---
 
 func (u *persistence) savePlannedRows(ctx context.Context, em *entityMapping, entities []any, toInsert, toUpdate []plannedRow) ([]bool, error) {
-	layout := &em.saveLayout.rows
-
 	savedRows := make([]savedRow, 0, len(entities))
 	inserted := make([]bool, len(entities))
 	if len(toInsert) > 0 {
-		res, err := u.backend.InsertRows(ctx, insertOp{
-			schema: em.schema, table: em.table, layout: layout, rows: toInsert,
-		})
+		res, err := u.backend.InsertRows(ctx, em.saveLayout.newInsertOp(em.schema, em.table, toInsert))
 		if err != nil {
 			return nil, err
 		}
@@ -359,9 +355,7 @@ func (u *persistence) savePlannedRows(ctx context.Context, em *entityMapping, en
 		}
 	}
 	if len(toUpdate) > 0 {
-		res, err := u.backend.UpdateRows(ctx, updateOp{
-			schema: em.schema, table: em.table, layout: layout, rows: toUpdate,
-		})
+		res, err := u.backend.UpdateRows(ctx, em.saveLayout.newUpdateOp(em.schema, em.table, toUpdate))
 		if err != nil {
 			return nil, err
 		}

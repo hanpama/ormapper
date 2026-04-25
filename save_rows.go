@@ -15,15 +15,15 @@ func splitPlannedRows(rows []plannedRow) ([]int, []saveRow) {
 	return indexes, saveRows
 }
 
-func insertValuesFromRow(layout *saveRowsLayout, row saveRow) []any {
-	projected := make([]any, len(layout.insertIndexes))
-	for j, idx := range layout.insertIndexes {
+func insertValuesFromRow(insertIndexes []int, row saveRow) []any {
+	projected := make([]any, len(insertIndexes))
+	for j, idx := range insertIndexes {
 		projected[j] = row.values[idx]
 	}
 	return projected
 }
 
-func scanKeyedSavedRows(layout *saveRowsLayout, plannedRows []plannedRow, rowSet rows) ([]savedRow, error) {
+func scanKeyedSavedRows(returningCount int, primaryReturningIndexes []int, primaryTypes []reflect.Type, plannedRows []plannedRow, rowSet rows) ([]savedRow, error) {
 	inputByKey := make(map[Key]int, len(plannedRows))
 	for _, row := range plannedRows {
 		if _, exists := inputByKey[row.key]; exists {
@@ -32,15 +32,14 @@ func scanKeyedSavedRows(layout *saveRowsLayout, plannedRows []plannedRow, rowSet
 		inputByKey[row.key] = row.index
 	}
 
-	returningColumnCount := len(layout.returningColumns)
-	dest := make([]any, returningColumnCount)
+	dest := make([]any, returningCount)
 	saved := make([]savedRow, 0, len(plannedRows))
 	for rowSet.Next() {
-		values := make([]any, returningColumnCount)
+		values := make([]any, returningCount)
 		if err := scanRowValues(rowSet, values, dest); err != nil {
 			return nil, err
 		}
-		key := primaryKeyFromReturnedValues(layout, values)
+		key := coercedKeyFromIndexes(values, primaryReturningIndexes, primaryTypes)
 		index, ok := inputByKey[key]
 		if !ok {
 			return nil, fmt.Errorf("returned key %v does not match any input row", key)
@@ -48,10 +47,6 @@ func scanKeyedSavedRows(layout *saveRowsLayout, plannedRows []plannedRow, rowSet
 		saved = append(saved, savedRow{index: index, values: values})
 	}
 	return saved, nil
-}
-
-func primaryKeyFromReturnedValues(layout *saveRowsLayout, values []any) Key {
-	return coercedKeyFromIndexes(values, layout.primaryReturningIndexes, layout.primaryTypes)
 }
 
 func coercedKeyFromIndexes(values []any, indexes []int, types []reflect.Type) Key {

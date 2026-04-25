@@ -376,13 +376,13 @@ func (b *sqliteBackend) renderSelectExistingKeys(stmt keyScanOp, keys []Key) (st
 }
 
 func (b *sqliteBackend) renderGeneratedInsertRows(op insertOp, indexes []int, rows []saveRow, useSQLiteSequence bool) (string, []any, error) {
-	generatedPrimaryColumns := op.layout.generatedPrimaryColumns
+	generatedPrimaryColumns := op.generatedPrimaryColumns
 	if len(generatedPrimaryColumns) != 1 {
 		return "", nil, fmt.Errorf("sqlite generated insert correlation requires one generated primary key")
 	}
 
 	b.paramIndex = 0
-	insertColumns := op.layout.insertColumns
+	insertColumns := op.insertColumns
 	extraArgs := 0
 	if useSQLiteSequence {
 		extraArgs = 1
@@ -404,7 +404,7 @@ func (b *sqliteBackend) renderGeneratedInsertRows(op insertOp, indexes []int, ro
 		}
 		b.writeByte('(')
 		b.writeString(strconv.Itoa(indexes[idx]))
-		values := insertValuesFromRow(op.layout, row)
+		values := insertValuesFromRow(op.insertIndexes, row)
 		for _, val := range values {
 			b.writeString(", ")
 			b.writeByte('?')
@@ -451,7 +451,7 @@ func (b *sqliteBackend) renderGeneratedInsertRows(op insertOp, indexes []int, ro
 	b.writeString(" INSERT INTO ")
 	b.quoteIdentifier(op.table)
 	b.writeString(" (")
-	insertWithGenerated := op.layout.insertColumnsWithGeneratedPrimary
+	insertWithGenerated := op.insertColumnsWithGeneratedPrimary
 	for i, col := range insertWithGenerated {
 		if i > 0 {
 			b.writeString(", ")
@@ -468,9 +468,9 @@ func (b *sqliteBackend) renderGeneratedInsertRows(op insertOp, indexes []int, ro
 	b.writeString(" FROM allocated ORDER BY ")
 	b.quoteIdentifier("$i")
 
-	if len(op.layout.returningColumns) > 0 {
+	if len(op.returningColumns) > 0 {
 		b.writeString(" RETURNING ")
-		for i, col := range op.layout.returningColumns {
+		for i, col := range op.returningColumns {
 			if i > 0 {
 				b.writeString(", ")
 			}
@@ -483,7 +483,7 @@ func (b *sqliteBackend) renderGeneratedInsertRows(op insertOp, indexes []int, ro
 
 func (b *sqliteBackend) renderInsertRows(op insertOp, rows []saveRow) (string, []any) {
 	b.paramIndex = 0
-	insertColumns := op.layout.insertColumns
+	insertColumns := op.insertColumns
 	b.resetArgsBuffer(len(rows) * len(insertColumns))
 	b.resetSQLBuffer(512)
 
@@ -501,7 +501,7 @@ func (b *sqliteBackend) renderInsertRows(op insertOp, rows []saveRow) (string, [
 			b.writeString(", ")
 		}
 		b.writeByte('(')
-		values := insertValuesFromRow(op.layout, row)
+		values := insertValuesFromRow(op.insertIndexes, row)
 		for j, val := range values {
 			if j > 0 {
 				b.writeString(", ")
@@ -532,9 +532,9 @@ func (b *sqliteBackend) renderInsertRows(op insertOp, rows []saveRow) (string, [
 	}
 	b.writeString(" FROM new_rows")
 
-	if len(op.layout.returningColumns) > 0 {
+	if len(op.returningColumns) > 0 {
 		b.writeString(" RETURNING ")
-		for i, col := range op.layout.returningColumns {
+		for i, col := range op.returningColumns {
 			if i > 0 {
 				b.writeString(", ")
 			}
@@ -547,9 +547,9 @@ func (b *sqliteBackend) renderInsertRows(op insertOp, rows []saveRow) (string, [
 
 func (b *sqliteBackend) renderUpdateRows(op updateOp, rows []saveRow) (string, []any) {
 	b.paramIndex = 0
-	rowColumns := op.layout.rowColumns
-	keyColumns := op.layout.primaryColumns
-	updateColumns := op.layout.updateColumns
+	rowColumns := op.rowColumns
+	keyColumns := op.primaryColumns
+	updateColumns := op.updateColumns
 	if len(updateColumns) == 0 {
 		updateColumns = keyColumns[:1]
 	}
@@ -603,9 +603,9 @@ func (b *sqliteBackend) renderUpdateRows(op updateOp, rows []saveRow) (string, [
 		b.quoteIdentifier(col)
 	}
 
-	if len(op.layout.returningColumns) > 0 {
+	if len(op.returningColumns) > 0 {
 		b.writeString(" RETURNING ")
-		for i, col := range op.layout.returningColumns {
+		for i, col := range op.returningColumns {
 			if i > 0 {
 				b.writeString(", ")
 			}
@@ -710,7 +710,7 @@ func (b *sqliteBackend) InsertRows(ctx context.Context, op insertOp) (insertRes,
 	}
 
 	indexes, saveRows := splitPlannedRows(op.rows)
-	if len(op.layout.generatedPrimaryColumns) > 0 {
+	if len(op.generatedPrimaryColumns) > 0 {
 		return b.insertGeneratedRows(ctx, op, indexes, saveRows)
 	}
 
@@ -721,7 +721,7 @@ func (b *sqliteBackend) InsertRows(ctx context.Context, op insertOp) (insertRes,
 	}
 	defer func() { _ = rowSet.Close() }()
 
-	return scanKeyedSavedRows(op.layout, op.rows, rowSet)
+	return scanKeyedSavedRows(len(op.returningColumns), op.primaryReturningIndexes, op.primaryTypes, op.rows, rowSet)
 }
 
 func (b *sqliteBackend) insertGeneratedRows(ctx context.Context, op insertOp, indexes []int, rows []saveRow) ([]savedRow, error) {
@@ -752,7 +752,7 @@ func (b *sqliteBackend) insertGeneratedRows(ctx context.Context, op insertOp, in
 }
 
 func (b *sqliteBackend) scanRowsBySingleIntKeyOrder(op insertOp, indexes []int, rowSet rows) ([]savedRow, error) {
-	if len(op.layout.primaryColumns) != 1 {
+	if len(op.primaryColumns) != 1 {
 		return nil, fmt.Errorf("ordered generated insert correlation requires one primary key")
 	}
 
@@ -760,7 +760,7 @@ func (b *sqliteBackend) scanRowsBySingleIntKeyOrder(op insertOp, indexes []int, 
 		key    int64
 		values []any
 	}
-	returningColumnCount := len(op.layout.returningColumns)
+	returningColumnCount := len(op.returningColumns)
 	dest := make([]any, returningColumnCount)
 	keyed := make([]keyedRow, 0, len(indexes))
 	for rowSet.Next() {
@@ -768,7 +768,7 @@ func (b *sqliteBackend) scanRowsBySingleIntKeyOrder(op insertOp, indexes []int, 
 		if err := scanRowValues(rowSet, values, dest); err != nil {
 			return nil, err
 		}
-		key := primaryKeyFromReturnedValues(op.layout, values)
+		key := coercedKeyFromIndexes(values, op.primaryReturningIndexes, op.primaryTypes)
 		value, err := int64FromDB(key.At(0))
 		if err != nil {
 			return nil, err
@@ -805,7 +805,7 @@ func (b *sqliteBackend) UpdateRows(ctx context.Context, op updateOp) (updateRes,
 	}
 	defer func() { _ = rowSet.Close() }()
 
-	return scanKeyedSavedRows(op.layout, op.rows, rowSet)
+	return scanKeyedSavedRows(len(op.returningColumns), op.primaryReturningIndexes, op.primaryTypes, op.rows, rowSet)
 }
 
 func (b *sqliteBackend) DeleteRowsByKeys(ctx context.Context, op deleteRowsOp) error {

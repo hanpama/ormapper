@@ -212,7 +212,7 @@ func validateMappings(registry mappingRegistry) error {
 		if len(em.primaryKey) == 0 {
 			return fmt.Errorf("Compile: entity %s has no primary key", em.entityType)
 		}
-		if len(em.saveLayout.rows.generatedPrimaryIndexes) > 0 && len(em.primaryKey) != 1 {
+		if len(em.saveLayout.generatedPrimaryIndexes) > 0 && len(em.primaryKey) != 1 {
 			return fmt.Errorf("%w: entity %s has generated composite primary key", ErrUnsupportedSemantic, em.entityType)
 		}
 

@@ -54,19 +54,31 @@ type keyScanOp struct {
 }
 
 type insertOp struct {
-	schema string
-	table  string
-	layout *saveRowsLayout
-	rows   []plannedRow
+	schema                            string
+	table                             string
+	rows                              []plannedRow
+	insertColumns                     []string
+	insertIndexes                     []int
+	insertColumnsWithGeneratedPrimary []string
+	generatedPrimaryColumns           []string
+	primaryColumns                    []string
+	returningColumns                  []string
+	primaryReturningIndexes           []int
+	primaryTypes                      []reflect.Type
 }
 
 type insertRes []savedRow
 
 type updateOp struct {
-	schema string
-	table  string
-	layout *saveRowsLayout
-	rows   []plannedRow
+	schema                  string
+	table                   string
+	rows                    []plannedRow
+	rowColumns              []string
+	primaryColumns          []string
+	updateColumns           []string
+	returningColumns        []string
+	primaryReturningIndexes []int
+	primaryTypes            []reflect.Type
 }
 
 type updateRes []savedRow
@@ -84,21 +96,6 @@ type plannedRow struct {
 type savedRow struct {
 	index  int
 	values []any
-}
-
-type saveRowsLayout struct {
-	rowColumns                        []string
-	insertColumns                     []string
-	insertIndexes                     []int
-	insertColumnsWithGeneratedPrimary []string
-	updateColumns                     []string
-	primaryColumns                    []string
-	primaryIndexes                    []int
-	primaryTypes                      []reflect.Type
-	generatedPrimaryColumns           []string
-	generatedPrimaryIndexes           []int
-	returningColumns                  []string
-	primaryReturningIndexes           []int
 }
 
 type deleteRowsOp struct {

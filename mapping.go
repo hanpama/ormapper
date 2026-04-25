@@ -138,7 +138,19 @@ func (c *child) setByParentIndexes(parents []any, children []any, parentIndexes 
 type saveLayout struct {
 	rowFields       []*field
 	returningFields []*field
-	rows            saveRowsLayout
+
+	rowColumns                        []string
+	insertColumns                     []string
+	insertIndexes                     []int
+	insertColumnsWithGeneratedPrimary []string
+	updateColumns                     []string
+	primaryColumns                    []string
+	primaryIndexes                    []int
+	primaryTypes                      []reflect.Type
+	generatedPrimaryColumns           []string
+	generatedPrimaryIndexes           []int
+	returningColumns                  []string
+	primaryReturningIndexes           []int
 }
 
 func (sl *saveLayout) projectEntity(entity any) (saveRow, Key) {
@@ -148,17 +160,17 @@ func (sl *saveLayout) projectEntity(entity any) (saveRow, Key) {
 		row[j] = field.valueFrom(entityValue)
 	}
 	var keyValues [9]any
-	if len(sl.rows.primaryIndexes) > len(keyValues) {
+	if len(sl.primaryIndexes) > len(keyValues) {
 		panic("ormapper: Key supports up to 9 column values")
 	}
-	for j, idx := range sl.rows.primaryIndexes {
+	for j, idx := range sl.primaryIndexes {
 		keyValues[j] = row[idx]
 	}
-	return saveRow{values: row}, newKeyFromValues(keyValues[:len(sl.rows.primaryIndexes)])
+	return saveRow{values: row}, newKeyFromValues(keyValues[:len(sl.primaryIndexes)])
 }
 
 func (sl *saveLayout) isInsert(row saveRow) (bool, error) {
-	generatedIndexes := sl.rows.generatedPrimaryIndexes
+	generatedIndexes := sl.generatedPrimaryIndexes
 	if len(generatedIndexes) == 0 {
 		return false, nil
 	}
@@ -185,7 +197,37 @@ func (sl *saveLayout) isInsert(row saveRow) (bool, error) {
 }
 
 func (sl *saveLayout) hasGeneratedKey() bool {
-	return len(sl.rows.generatedPrimaryIndexes) > 0
+	return len(sl.generatedPrimaryIndexes) > 0
+}
+
+func (sl *saveLayout) newInsertOp(schema, table string, rows []plannedRow) insertOp {
+	return insertOp{
+		schema:                            schema,
+		table:                             table,
+		rows:                              rows,
+		insertColumns:                     sl.insertColumns,
+		insertIndexes:                     sl.insertIndexes,
+		insertColumnsWithGeneratedPrimary: sl.insertColumnsWithGeneratedPrimary,
+		generatedPrimaryColumns:           sl.generatedPrimaryColumns,
+		primaryColumns:                    sl.primaryColumns,
+		returningColumns:                  sl.returningColumns,
+		primaryReturningIndexes:           sl.primaryReturningIndexes,
+		primaryTypes:                      sl.primaryTypes,
+	}
+}
+
+func (sl *saveLayout) newUpdateOp(schema, table string, rows []plannedRow) updateOp {
+	return updateOp{
+		schema:                  schema,
+		table:                   table,
+		rows:                    rows,
+		rowColumns:              sl.rowColumns,
+		primaryColumns:          sl.primaryColumns,
+		updateColumns:           sl.updateColumns,
+		returningColumns:        sl.returningColumns,
+		primaryReturningIndexes: sl.primaryReturningIndexes,
+		primaryTypes:            sl.primaryTypes,
+	}
 }
 
 func (sl *saveLayout) applyReturningValues(entity any, values []any) error {
@@ -304,19 +346,18 @@ func newSaveLayout(
 		rowFields:       make([]*field, 0, len(allFields)),
 		returningFields: make([]*field, 0, len(allFields)),
 	}
-	rows := &layout.rows
-	rows.rowColumns = make([]string, 0, len(allFields))
-	rows.insertColumns = make([]string, 0, len(insertable))
-	rows.insertIndexes = make([]int, 0, len(insertable))
-	rows.insertColumnsWithGeneratedPrimary = make([]string, 0, len(insertable)+len(primaryKey))
-	rows.updateColumns = make([]string, 0, len(updatable))
-	rows.primaryColumns = make([]string, 0, len(primaryKey))
-	rows.primaryIndexes = make([]int, 0, len(primaryKey))
-	rows.primaryTypes = make([]reflect.Type, 0, len(primaryKey))
-	rows.generatedPrimaryColumns = make([]string, 0, len(primaryKey))
-	rows.generatedPrimaryIndexes = make([]int, 0, len(primaryKey))
-	rows.returningColumns = make([]string, 0, len(allFields))
-	rows.primaryReturningIndexes = make([]int, 0, len(primaryKey))
+	layout.rowColumns = make([]string, 0, len(allFields))
+	layout.insertColumns = make([]string, 0, len(insertable))
+	layout.insertIndexes = make([]int, 0, len(insertable))
+	layout.insertColumnsWithGeneratedPrimary = make([]string, 0, len(insertable)+len(primaryKey))
+	layout.updateColumns = make([]string, 0, len(updatable))
+	layout.primaryColumns = make([]string, 0, len(primaryKey))
+	layout.primaryIndexes = make([]int, 0, len(primaryKey))
+	layout.primaryTypes = make([]reflect.Type, 0, len(primaryKey))
+	layout.generatedPrimaryColumns = make([]string, 0, len(primaryKey))
+	layout.generatedPrimaryIndexes = make([]int, 0, len(primaryKey))
+	layout.returningColumns = make([]string, 0, len(allFields))
+	layout.primaryReturningIndexes = make([]int, 0, len(primaryKey))
 	rowIndexByName := make(map[string]int, len(allFields))
 
 	for _, name := range allFields {
@@ -324,33 +365,33 @@ func newSaveLayout(
 			field := fieldMap[name]
 			rowIndexByName[name] = len(layout.rowFields)
 			layout.rowFields = append(layout.rowFields, field)
-			rows.rowColumns = append(rows.rowColumns, field.column)
+			layout.rowColumns = append(layout.rowColumns, field.column)
 		}
 	}
 
 	for i, field := range layout.rowFields {
 		if slices.Contains(insertable, field.name) {
-			rows.insertColumns = append(rows.insertColumns, field.column)
-			rows.insertIndexes = append(rows.insertIndexes, i)
+			layout.insertColumns = append(layout.insertColumns, field.column)
+			layout.insertIndexes = append(layout.insertIndexes, i)
 		}
 		if slices.Contains(updatable, field.name) {
-			rows.updateColumns = append(rows.updateColumns, field.column)
+			layout.updateColumns = append(layout.updateColumns, field.column)
 		}
 	}
 
 	for _, name := range primaryKey {
 		column := fieldMap[name].column
-		rows.primaryColumns = append(rows.primaryColumns, column)
-		rows.primaryIndexes = append(rows.primaryIndexes, rowIndexByName[name])
-		rows.primaryTypes = append(rows.primaryTypes, fieldMap[name].typ)
+		layout.primaryColumns = append(layout.primaryColumns, column)
+		layout.primaryIndexes = append(layout.primaryIndexes, rowIndexByName[name])
+		layout.primaryTypes = append(layout.primaryTypes, fieldMap[name].typ)
 		if !slices.Contains(insertable, name) {
-			rows.generatedPrimaryColumns = append(rows.generatedPrimaryColumns, column)
-			rows.generatedPrimaryIndexes = append(rows.generatedPrimaryIndexes, rowIndexByName[name])
+			layout.generatedPrimaryColumns = append(layout.generatedPrimaryColumns, column)
+			layout.generatedPrimaryIndexes = append(layout.generatedPrimaryIndexes, rowIndexByName[name])
 		}
 	}
 
-	rows.insertColumnsWithGeneratedPrimary = append(rows.insertColumnsWithGeneratedPrimary, rows.generatedPrimaryColumns...)
-	rows.insertColumnsWithGeneratedPrimary = append(rows.insertColumnsWithGeneratedPrimary, rows.insertColumns...)
+	layout.insertColumnsWithGeneratedPrimary = append(layout.insertColumnsWithGeneratedPrimary, layout.generatedPrimaryColumns...)
+	layout.insertColumnsWithGeneratedPrimary = append(layout.insertColumnsWithGeneratedPrimary, layout.insertColumns...)
 
 	for _, name := range primaryKey {
 		layout.returningFields = append(layout.returningFields, fieldMap[name])
@@ -361,10 +402,10 @@ func newSaveLayout(
 		}
 	}
 	for _, field := range layout.returningFields {
-		rows.returningColumns = append(rows.returningColumns, field.column)
+		layout.returningColumns = append(layout.returningColumns, field.column)
 	}
-	for _, column := range rows.primaryColumns {
-		rows.primaryReturningIndexes = append(rows.primaryReturningIndexes, slices.Index(rows.returningColumns, column))
+	for _, column := range layout.primaryColumns {
+		layout.primaryReturningIndexes = append(layout.primaryReturningIndexes, slices.Index(layout.returningColumns, column))
 	}
 
 	return layout
