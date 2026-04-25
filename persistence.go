@@ -339,36 +339,36 @@ func (u *persistence) loadRelationKeys(ctx context.Context, childMapping *entity
 // --- Save Execution ---
 
 func (u *persistence) savePlannedRows(ctx context.Context, em *entityMapping, entities []any, toInsert, toUpdate []plannedRow) ([]bool, error) {
-	saveOp := saveRowsOp{
-		schema: em.schema,
-		table:  em.table,
-		layout: &em.saveLayout.rows,
-	}
+	layout := &em.saveLayout.rows
 
 	savedRows := make([]savedRow, 0, len(entities))
 	inserted := make([]bool, len(entities))
 	if len(toInsert) > 0 {
-		insertedRows, err := u.backend.InsertRows(ctx, saveOp, toInsert)
+		res, err := u.backend.InsertRows(ctx, insertOp{
+			schema: em.schema, table: em.table, layout: layout, rows: toInsert,
+		})
 		if err != nil {
 			return nil, err
 		}
-		if len(insertedRows) != len(toInsert) {
-			return nil, fmt.Errorf("%w: expected %d inserted rows, got %d", ErrConsistency, len(toInsert), len(insertedRows))
+		if len(res) != len(toInsert) {
+			return nil, fmt.Errorf("%w: expected %d inserted rows, got %d", ErrConsistency, len(toInsert), len(res))
 		}
-		savedRows = append(savedRows, insertedRows...)
+		savedRows = append(savedRows, res...)
 		for _, row := range toInsert {
 			inserted[row.index] = true
 		}
 	}
 	if len(toUpdate) > 0 {
-		updatedRows, err := u.backend.UpdateRows(ctx, saveOp, toUpdate)
+		res, err := u.backend.UpdateRows(ctx, updateOp{
+			schema: em.schema, table: em.table, layout: layout, rows: toUpdate,
+		})
 		if err != nil {
 			return nil, err
 		}
-		if len(updatedRows) != len(toUpdate) {
-			return nil, fmt.Errorf("%w: expected %d updated rows, got %d", ErrStaleEntity, len(toUpdate), len(updatedRows))
+		if len(res) != len(toUpdate) {
+			return nil, fmt.Errorf("%w: expected %d updated rows, got %d", ErrStaleEntity, len(toUpdate), len(res))
 		}
-		savedRows = append(savedRows, updatedRows...)
+		savedRows = append(savedRows, res...)
 	}
 
 	seen := make([]bool, len(entities))

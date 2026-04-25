@@ -30,8 +30,8 @@ type rows interface {
 type backend interface {
 	LoadRows(ctx context.Context, op loadRowsOp) (rows, error)
 	SelectExistingKeys(ctx context.Context, op keyScanOp) ([]Key, error)
-	InsertRows(ctx context.Context, op saveRowsOp, rows []plannedRow) ([]savedRow, error)
-	UpdateRows(ctx context.Context, op saveRowsOp, rows []plannedRow) ([]savedRow, error)
+	InsertRows(ctx context.Context, op insertOp) (insertRes, error)
+	UpdateRows(ctx context.Context, op updateOp) (updateRes, error)
 	DeleteRowsByKeys(ctx context.Context, op deleteRowsOp) error
 	FetchQuery(ctx context.Context, stmt sqlQuery) (rows, error)
 	CountQuery(ctx context.Context, stmt sqlQuery) (int64, error)
@@ -53,11 +53,23 @@ type keyScanOp struct {
 	keys       []Key
 }
 
-type saveRowsOp struct {
+type insertOp struct {
 	schema string
 	table  string
 	layout *saveRowsLayout
+	rows   []plannedRow
 }
+
+type insertRes []savedRow
+
+type updateOp struct {
+	schema string
+	table  string
+	layout *saveRowsLayout
+	rows   []plannedRow
+}
+
+type updateRes []savedRow
 
 type saveRow struct {
 	values []any

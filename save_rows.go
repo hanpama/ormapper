@@ -23,7 +23,7 @@ func insertValuesFromRow(layout *saveRowsLayout, row saveRow) []any {
 	return projected
 }
 
-func scanKeyedSavedRows(op saveRowsOp, plannedRows []plannedRow, rowSet rows) ([]savedRow, error) {
+func scanKeyedSavedRows(layout *saveRowsLayout, plannedRows []plannedRow, rowSet rows) ([]savedRow, error) {
 	inputByKey := make(map[Key]int, len(plannedRows))
 	for _, row := range plannedRows {
 		if _, exists := inputByKey[row.key]; exists {
@@ -32,7 +32,7 @@ func scanKeyedSavedRows(op saveRowsOp, plannedRows []plannedRow, rowSet rows) ([
 		inputByKey[row.key] = row.index
 	}
 
-	returningColumnCount := len(op.layout.returningColumns)
+	returningColumnCount := len(layout.returningColumns)
 	dest := make([]any, returningColumnCount)
 	saved := make([]savedRow, 0, len(plannedRows))
 	for rowSet.Next() {
@@ -40,7 +40,7 @@ func scanKeyedSavedRows(op saveRowsOp, plannedRows []plannedRow, rowSet rows) ([
 		if err := scanRowValues(rowSet, values, dest); err != nil {
 			return nil, err
 		}
-		key := primaryKeyFromReturnedValues(op.layout, values)
+		key := primaryKeyFromReturnedValues(layout, values)
 		index, ok := inputByKey[key]
 		if !ok {
 			return nil, fmt.Errorf("returned key %v does not match any input row", key)
