@@ -12,19 +12,16 @@ type field struct {
 	fieldIndex int // Index of the field in the struct for direct reflect access
 }
 
-func (f *field) getPtr(entityPtr any) any {
-	sv := reflect.ValueOf(entityPtr).Elem()
-	return sv.Field(f.fieldIndex).Addr().Interface()
+func (f *field) ptrFrom(entity reflect.Value) any {
+	return entity.Field(f.fieldIndex).Addr().Interface()
 }
 
-func (f *field) getValue(entityPtr any) any {
-	sv := reflect.ValueOf(entityPtr).Elem()
-	return sv.Field(f.fieldIndex).Interface()
+func (f *field) valueFrom(entity reflect.Value) any {
+	return entity.Field(f.fieldIndex).Interface()
 }
 
-func (f *field) setValue(entityPtr any, value any) {
-	sv := reflect.ValueOf(entityPtr).Elem()
-	field := sv.Field(f.fieldIndex)
+func (f *field) setOn(entity reflect.Value, value any) {
+	field := entity.Field(f.fieldIndex)
 	if value == nil {
 		field.Set(reflect.Zero(field.Type()))
 		return
@@ -41,6 +38,27 @@ func (f *field) setValue(entityPtr any, value any) {
 	field.Set(v)
 }
 
+type fieldPlan struct {
+	fields  []*field
+	columns []string
+	types   []reflect.Type
+}
+
+func newFieldPlan(fieldMap map[string]*field, fieldNames []string) fieldPlan {
+	plan := fieldPlan{
+		fields:  make([]*field, 0, len(fieldNames)),
+		columns: make([]string, 0, len(fieldNames)),
+		types:   make([]reflect.Type, 0, len(fieldNames)),
+	}
+	for _, name := range fieldNames {
+		field := fieldMap[name]
+		plan.fields = append(plan.fields, field)
+		plan.columns = append(plan.columns, field.column)
+		plan.types = append(plan.types, field.typ)
+	}
+	return plan
+}
+
 type child struct {
 	target     reflect.Type
 	singular   bool
@@ -48,53 +66,71 @@ type child struct {
 	fieldIndex int // Index of the field in the struct for direct reflect access
 }
 
-func (c *child) get(entityPtr any) []any {
+func (c *child) count(entityPtr any) int {
+	sv := reflect.ValueOf(entityPtr).Elem()
+	fieldPtr := sv.Field(c.fieldIndex)
 	if c.singular {
-		sv := reflect.ValueOf(entityPtr).Elem()
-		fieldPtr := sv.Field(c.fieldIndex)
 		if fieldPtr.IsNil() {
-			return []any{}
+			return 0
 		}
-		value := fieldPtr.Interface()
-		if value == nil {
-			return []any{}
-		}
-		return []any{value}
-	} else {
-		sv := reflect.ValueOf(entityPtr).Elem()
-		fieldPtr := sv.Field(c.fieldIndex)
-		sliceLen := fieldPtr.Len()
-		result := make([]any, sliceLen)
-		for j := 0; j < sliceLen; j++ {
-			result[j] = fieldPtr.Index(j).Interface()
-		}
-		return result
+		return 1
 	}
+	return fieldPtr.Len()
 }
 
-func (c *child) set(entityPtr any, children []any) {
+func (c *child) appendTo(entityPtr any, dst []any) []any {
+	sv := reflect.ValueOf(entityPtr).Elem()
+	fieldPtr := sv.Field(c.fieldIndex)
 	if c.singular {
-		var value any
-		if len(children) > 0 {
-			value = children[0]
-		} else {
-			value = nil
+		if fieldPtr.IsNil() {
+			return dst
 		}
-		sv := reflect.ValueOf(entityPtr).Elem()
-		fieldPtr := sv.Field(c.fieldIndex)
-		if value == nil {
-			fieldPtr.Set(reflect.Zero(c.typ))
-		} else {
-			fieldPtr.Set(reflect.ValueOf(value))
+		return append(dst, fieldPtr.Interface())
+	}
+
+	for j := 0; j < fieldPtr.Len(); j++ {
+		dst = append(dst, fieldPtr.Index(j).Interface())
+	}
+	return dst
+}
+
+func (c *child) setByParentIndexes(parents []any, children []any, parentIndexes []int, counts []int) {
+	if c.singular {
+		for _, parent := range parents {
+			entity := reflect.ValueOf(parent).Elem()
+			entity.Field(c.fieldIndex).Set(reflect.Zero(c.typ))
 		}
-	} else {
-		sv := reflect.ValueOf(entityPtr).Elem()
-		fieldPtr := sv.Field(c.fieldIndex)
-		sliceVal := reflect.MakeSlice(c.typ, len(children), len(children))
-		for j, val := range children {
-			sliceVal.Index(j).Set(reflect.ValueOf(val))
+
+		clear(counts)
+		for i, childEntity := range children {
+			parentIndex := parentIndexes[i]
+			if parentIndex < 0 || counts[parentIndex] > 0 {
+				continue
+			}
+			entity := reflect.ValueOf(parents[parentIndex]).Elem()
+			entity.Field(c.fieldIndex).Set(reflect.ValueOf(childEntity))
+			counts[parentIndex] = 1
 		}
-		fieldPtr.Set(sliceVal)
+		return
+	}
+
+	parentSlices := make([]reflect.Value, len(parents))
+	for i, parent := range parents {
+		sliceVal := reflect.MakeSlice(c.typ, counts[i], counts[i])
+		parentSlices[i] = sliceVal
+		entity := reflect.ValueOf(parent).Elem()
+		entity.Field(c.fieldIndex).Set(sliceVal)
+	}
+
+	clear(counts)
+	for i, childEntity := range children {
+		parentIndex := parentIndexes[i]
+		if parentIndex < 0 {
+			continue
+		}
+		index := counts[parentIndex]
+		parentSlices[parentIndex].Index(index).Set(reflect.ValueOf(childEntity))
+		counts[parentIndex]++
 	}
 }
 
@@ -117,6 +153,12 @@ type entityMapping struct {
 	parentalColumns   []string
 	insertableColumns []string
 	updatableColumns  []string
+
+	allPlan        fieldPlan
+	primaryPlan    fieldPlan
+	parentalPlan   fieldPlan
+	insertablePlan fieldPlan
+	updatablePlan  fieldPlan
 
 	saveLayout *saveLayout
 }
@@ -152,24 +194,23 @@ func newEntityMapping(
 		insertableColumns: make([]string, 0, len(insertable)),
 		updatableColumns:  make([]string, 0, len(updatable)),
 	}
-	for _, name := range allFields {
-		em.allColumns = append(em.allColumns, fieldMap[name].column)
-	}
-	for _, name := range primaryKey {
-		em.primaryColumns = append(em.primaryColumns, fieldMap[name].column)
-	}
-	for _, name := range parentalKey {
-		em.parentalColumns = append(em.parentalColumns, fieldMap[name].column)
-	}
-	for _, name := range insertable {
-		em.insertableColumns = append(em.insertableColumns, fieldMap[name].column)
-	}
-	for _, name := range updatable {
-		em.updatableColumns = append(em.updatableColumns, fieldMap[name].column)
-	}
+	em.allPlan = newFieldPlan(fieldMap, allFields)
+	em.primaryPlan = newFieldPlan(fieldMap, primaryKey)
+	em.parentalPlan = newFieldPlan(fieldMap, parentalKey)
+	em.insertablePlan = newFieldPlan(fieldMap, insertable)
+	em.updatablePlan = newFieldPlan(fieldMap, updatable)
+	em.allColumns = em.allPlan.columns
+	em.primaryColumns = em.primaryPlan.columns
+	em.parentalColumns = em.parentalPlan.columns
+	em.insertableColumns = em.insertablePlan.columns
+	em.updatableColumns = em.updatablePlan.columns
 	em.saveLayout = newSaveLayout(fieldMap, allFields, primaryKey, insertable, updatable)
 
 	return em
+}
+
+func (em *entityMapping) newEntity() any {
+	return reflect.New(em.entityType).Interface()
 }
 
 func newSaveLayout(
@@ -180,73 +221,78 @@ func newSaveLayout(
 	updatable []string,
 ) *saveLayout {
 	layout := &saveLayout{
-		rowFields:                         make([]string, 0, len(allFields)),
-		rowColumns:                        make([]string, 0, len(allFields)),
-		insertColumns:                     make([]string, 0, len(insertable)),
-		insertIndexes:                     make([]int, 0, len(insertable)),
-		insertColumnsWithGeneratedPrimary: make([]string, 0, len(insertable)+len(primaryKey)),
-		updateColumns:                     make([]string, 0, len(updatable)),
-		primaryColumns:                    make([]string, 0, len(primaryKey)),
-		primaryIndexes:                    make([]int, 0, len(primaryKey)),
-		primaryTypes:                      make([]reflect.Type, 0, len(primaryKey)),
-		generatedPrimaryColumns:           make([]string, 0, len(primaryKey)),
-		generatedPrimaryIndexes:           make([]int, 0, len(primaryKey)),
-		returningFields:                   make([]string, 0, len(allFields)),
-		returningColumns:                  make([]string, 0, len(allFields)),
-		primaryReturningIndexes:           make([]int, 0, len(primaryKey)),
+		rowFields:       make([]*field, 0, len(allFields)),
+		returningFields: make([]*field, 0, len(allFields)),
 	}
+	rows := &layout.rows
+	rows.rowColumns = make([]string, 0, len(allFields))
+	rows.insertColumns = make([]string, 0, len(insertable))
+	rows.insertIndexes = make([]int, 0, len(insertable))
+	rows.insertColumnsWithGeneratedPrimary = make([]string, 0, len(insertable)+len(primaryKey))
+	rows.updateColumns = make([]string, 0, len(updatable))
+	rows.primaryColumns = make([]string, 0, len(primaryKey))
+	rows.primaryIndexes = make([]int, 0, len(primaryKey))
+	rows.primaryTypes = make([]reflect.Type, 0, len(primaryKey))
+	rows.generatedPrimaryColumns = make([]string, 0, len(primaryKey))
+	rows.generatedPrimaryIndexes = make([]int, 0, len(primaryKey))
+	rows.returningColumns = make([]string, 0, len(allFields))
+	rows.primaryReturningIndexes = make([]int, 0, len(primaryKey))
 
 	for _, name := range allFields {
 		if slices.Contains(insertable, name) || slices.Contains(primaryKey, name) || slices.Contains(updatable, name) {
-			layout.rowFields = append(layout.rowFields, name)
-			layout.rowColumns = append(layout.rowColumns, fieldMap[name].column)
+			field := fieldMap[name]
+			layout.rowFields = append(layout.rowFields, field)
+			rows.rowColumns = append(rows.rowColumns, field.column)
 		}
 	}
 
-	for i, name := range layout.rowFields {
-		if slices.Contains(insertable, name) {
-			layout.insertColumns = append(layout.insertColumns, fieldMap[name].column)
-			layout.insertIndexes = append(layout.insertIndexes, i)
+	for i, field := range layout.rowFields {
+		if slices.Contains(insertable, field.name) {
+			rows.insertColumns = append(rows.insertColumns, field.column)
+			rows.insertIndexes = append(rows.insertIndexes, i)
 		}
-		if slices.Contains(updatable, name) {
-			layout.updateColumns = append(layout.updateColumns, fieldMap[name].column)
+		if slices.Contains(updatable, field.name) {
+			rows.updateColumns = append(rows.updateColumns, field.column)
 		}
 	}
 
 	for _, name := range primaryKey {
 		column := fieldMap[name].column
-		layout.primaryColumns = append(layout.primaryColumns, column)
-		layout.primaryIndexes = append(layout.primaryIndexes, slices.Index(layout.rowFields, name))
-		layout.primaryTypes = append(layout.primaryTypes, fieldMap[name].typ)
+		rows.primaryColumns = append(rows.primaryColumns, column)
+		rows.primaryIndexes = append(rows.primaryIndexes, indexFieldByName(layout.rowFields, name))
+		rows.primaryTypes = append(rows.primaryTypes, fieldMap[name].typ)
 		if !slices.Contains(insertable, name) {
-			layout.generatedPrimaryColumns = append(layout.generatedPrimaryColumns, column)
-			layout.generatedPrimaryIndexes = append(layout.generatedPrimaryIndexes, slices.Index(layout.rowFields, name))
+			rows.generatedPrimaryColumns = append(rows.generatedPrimaryColumns, column)
+			rows.generatedPrimaryIndexes = append(rows.generatedPrimaryIndexes, indexFieldByName(layout.rowFields, name))
 		}
 	}
 
-	layout.insertColumnsWithGeneratedPrimary = append(layout.insertColumnsWithGeneratedPrimary, layout.generatedPrimaryColumns...)
-	layout.insertColumnsWithGeneratedPrimary = append(layout.insertColumnsWithGeneratedPrimary, layout.insertColumns...)
+	rows.insertColumnsWithGeneratedPrimary = append(rows.insertColumnsWithGeneratedPrimary, rows.generatedPrimaryColumns...)
+	rows.insertColumnsWithGeneratedPrimary = append(rows.insertColumnsWithGeneratedPrimary, rows.insertColumns...)
 
-	layout.returningFields = append(layout.returningFields, primaryKey...)
+	for _, name := range primaryKey {
+		layout.returningFields = append(layout.returningFields, fieldMap[name])
+	}
 	for _, name := range allFields {
 		if !slices.Contains(insertable, name) && !slices.Contains(primaryKey, name) {
-			layout.returningFields = append(layout.returningFields, name)
+			layout.returningFields = append(layout.returningFields, fieldMap[name])
 		}
 	}
-	for _, name := range layout.returningFields {
-		layout.returningColumns = append(layout.returningColumns, fieldMap[name].column)
+	for _, field := range layout.returningFields {
+		rows.returningColumns = append(rows.returningColumns, field.column)
 	}
-	for _, column := range layout.primaryColumns {
-		layout.primaryReturningIndexes = append(layout.primaryReturningIndexes, slices.Index(layout.returningColumns, column))
+	for _, column := range rows.primaryColumns {
+		rows.primaryReturningIndexes = append(rows.primaryReturningIndexes, slices.Index(rows.returningColumns, column))
 	}
 
 	return layout
 }
 
-func (em *entityMapping) fieldTypes(fieldNames []string) []reflect.Type {
-	types := make([]reflect.Type, len(fieldNames))
-	for i, name := range fieldNames {
-		types[i] = em.fieldMap[name].typ
+func indexFieldByName(fields []*field, name string) int {
+	for i, field := range fields {
+		if field.name == name {
+			return i
+		}
 	}
-	return types
+	return -1
 }

@@ -24,7 +24,7 @@ type keyScanOp struct {
 type saveRowsOp struct {
 	schema string
 	table  string
-	layout *saveLayout
+	layout *saveRowsLayout
 }
 
 type saveRow struct {
@@ -42,7 +42,12 @@ type savedRow struct {
 }
 
 type saveLayout struct {
-	rowFields                         []string
+	rowFields       []*field
+	returningFields []*field
+	rows            saveRowsLayout
+}
+
+type saveRowsLayout struct {
 	rowColumns                        []string
 	insertColumns                     []string
 	insertIndexes                     []int
@@ -53,7 +58,6 @@ type saveLayout struct {
 	primaryTypes                      []reflect.Type
 	generatedPrimaryColumns           []string
 	generatedPrimaryIndexes           []int
-	returningFields                   []string
 	returningColumns                  []string
 	primaryReturningIndexes           []int
 }
@@ -119,12 +123,7 @@ func (op saveRowsOp) returningColumns() []string {
 }
 
 func (op saveRowsOp) keyFromReturnedValues(values []any) Key {
-	indexes := op.layout.primaryReturningIndexes
-	keyValues := make([]any, len(indexes))
-	for i, idx := range indexes {
-		keyValues[i] = coerceValue(values[idx], op.layout.primaryTypes[i])
-	}
-	return NewKey(keyValues...)
+	return coercedKeyFromIndexes(values, op.layout.primaryReturningIndexes, op.layout.primaryTypes)
 }
 
 func (op saveRowsOp) classifyRow(row saveRow) (saveRowIntent, error) {
@@ -150,12 +149,29 @@ func (op saveRowsOp) classifyRow(row saveRow) (saveRowIntent, error) {
 }
 
 func (op saveRowsOp) keyFromRow(row saveRow) Key {
-	indexes := op.primaryKeyIndexes()
-	values := make([]any, len(indexes))
-	for i, idx := range indexes {
-		values[i] = row.values[idx]
+	return keyFromIndexes(row.values, op.primaryKeyIndexes())
+}
+
+func keyFromIndexes(values []any, indexes []int) Key {
+	var keyValues [9]any
+	if len(indexes) > len(keyValues) {
+		panic("ormapper: Key supports up to 9 column values")
 	}
-	return NewKey(values...)
+	for i, idx := range indexes {
+		keyValues[i] = values[idx]
+	}
+	return newKeyFromValues(keyValues[:len(indexes)])
+}
+
+func coercedKeyFromIndexes(values []any, indexes []int, types []reflect.Type) Key {
+	var keyValues [9]any
+	if len(indexes) > len(keyValues) {
+		panic("ormapper: Key supports up to 9 column values")
+	}
+	for i, idx := range indexes {
+		keyValues[i] = coerceValue(values[idx], types[i])
+	}
+	return newKeyFromValues(keyValues[:len(indexes)])
 }
 
 func valueIsZero(value any) bool {

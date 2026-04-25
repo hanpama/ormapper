@@ -255,10 +255,10 @@ func (b *sqliteBackend) renderSQLQuery(stmt sqlQuery) (string, []any) {
 
 // renderSelect renders a CTE-based SELECT with JOIN pattern
 // Query format: WITH keys (col1, col2) AS (VALUES (?,?), (?,?)) SELECT table.col1, table.col2 FROM table JOIN keys ON ...
-func (b *sqliteBackend) renderSelect(stmt loadRowsOp, chunk [][]any) (string, []any) {
+func (b *sqliteBackend) renderSelect(stmt loadRowsOp, keys []Key) (string, []any) {
 	b.paramIndex = 0
 	numKeyColumns := len(stmt.keyColumns)
-	b.resetArgsBuffer(len(chunk) * numKeyColumns)
+	b.resetArgsBuffer(len(keys) * numKeyColumns)
 
 	b.resetSQLBuffer(512)
 
@@ -271,7 +271,7 @@ func (b *sqliteBackend) renderSelect(stmt loadRowsOp, chunk [][]any) (string, []
 	}
 	b.writeString(") AS (VALUES ")
 
-	for idx, row := range chunk {
+	for idx, key := range keys {
 		if idx > 0 {
 			b.writeString(", ")
 		}
@@ -282,7 +282,7 @@ func (b *sqliteBackend) renderSelect(stmt loadRowsOp, chunk [][]any) (string, []
 			}
 			b.writeByte('?')
 			b.paramIndex++
-			b.argsBuffer = append(b.argsBuffer, row[j])
+			b.argsBuffer = append(b.argsBuffer, key.At(j))
 		}
 		b.writeByte(')')
 	}
@@ -316,10 +316,10 @@ func (b *sqliteBackend) renderSelect(stmt loadRowsOp, chunk [][]any) (string, []
 	return b.sqlString(), b.argsBuffer
 }
 
-func (b *sqliteBackend) renderSelectExistingKeys(stmt keyScanOp, chunk [][]any) (string, []any) {
+func (b *sqliteBackend) renderSelectExistingKeys(stmt keyScanOp, keys []Key) (string, []any) {
 	b.paramIndex = 0
 	numKeyColumns := len(stmt.keyColumns)
-	b.resetArgsBuffer(len(chunk) * numKeyColumns)
+	b.resetArgsBuffer(len(keys) * numKeyColumns)
 	b.resetSQLBuffer(512)
 
 	b.writeString("WITH keys (")
@@ -331,7 +331,7 @@ func (b *sqliteBackend) renderSelectExistingKeys(stmt keyScanOp, chunk [][]any) 
 	}
 	b.writeString(") AS (VALUES ")
 
-	for idx, row := range chunk {
+	for idx, key := range keys {
 		if idx > 0 {
 			b.writeString(", ")
 		}
@@ -342,7 +342,7 @@ func (b *sqliteBackend) renderSelectExistingKeys(stmt keyScanOp, chunk [][]any) 
 			}
 			b.writeByte('?')
 			b.paramIndex++
-			b.argsBuffer = append(b.argsBuffer, row[j])
+			b.argsBuffer = append(b.argsBuffer, key.At(j))
 		}
 		b.writeByte(')')
 	}
@@ -617,10 +617,10 @@ func (b *sqliteBackend) renderUpdateRows(stmt saveRowsOp, rows []saveRow) (strin
 
 // renderDelete renders a CTE-based DELETE with subquery pattern
 // Query format: WITH keys (id) AS (VALUES (?), (?)) DELETE FROM table WHERE id IN (SELECT id FROM keys)
-func (b *sqliteBackend) renderDelete(stmt deleteRowsOp, chunk [][]any) (string, []any) {
+func (b *sqliteBackend) renderDelete(stmt deleteRowsOp, keys []Key) (string, []any) {
 	b.paramIndex = 0
 	numKeyColumns := len(stmt.keyColumns)
-	b.resetArgsBuffer(len(chunk) * numKeyColumns)
+	b.resetArgsBuffer(len(keys) * numKeyColumns)
 
 	b.resetSQLBuffer(512)
 
@@ -633,7 +633,7 @@ func (b *sqliteBackend) renderDelete(stmt deleteRowsOp, chunk [][]any) (string, 
 	}
 	b.writeString(") AS (VALUES ")
 
-	for idx, row := range chunk {
+	for idx, key := range keys {
 		if idx > 0 {
 			b.writeString(", ")
 		}
@@ -644,7 +644,7 @@ func (b *sqliteBackend) renderDelete(stmt deleteRowsOp, chunk [][]any) (string, 
 			}
 			b.writeByte('?')
 			b.paramIndex++
-			b.argsBuffer = append(b.argsBuffer, row[j])
+			b.argsBuffer = append(b.argsBuffer, key.At(j))
 		}
 		b.writeByte(')')
 	}
@@ -685,7 +685,7 @@ func (b *sqliteBackend) LoadRows(ctx context.Context, op loadRowsOp) (rows, erro
 		return &emptyRows{}, nil
 	}
 
-	query, args := b.renderSelect(op, rowsFromKeys(op.keys))
+	query, args := b.renderSelect(op, op.keys)
 	return b.queryContext(ctx, query, args...)
 }
 
@@ -694,7 +694,7 @@ func (b *sqliteBackend) SelectExistingKeys(ctx context.Context, op keyScanOp) ([
 		return nil, nil
 	}
 
-	query, args := b.renderSelectExistingKeys(op, rowsFromKeys(op.keys))
+	query, args := b.renderSelectExistingKeys(op, op.keys)
 	rowSet, err := b.queryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
@@ -750,14 +750,11 @@ func (b *sqliteBackend) insertGeneratedRows(ctx context.Context, op saveRowsOp, 
 	}
 	defer func() { _ = rowSet.Close() }()
 
-	valueRows, err := scanValueRows(rowSet, len(op.returningColumns()))
+	saved, err := scanRowsBySingleIntKeyOrder(op, indexes, rowSet)
 	if err != nil {
 		return nil, err
 	}
-	if len(valueRows) != len(rows) {
-		return nil, fmt.Errorf("expected %d returned rows, got %d", len(rows), len(valueRows))
-	}
-	return savedRowsBySingleIntKeyOrder(op, indexes, valueRows)
+	return saved, nil
 }
 
 func (b *sqliteBackend) UpdateRows(ctx context.Context, op saveRowsOp, rows []plannedRow) ([]savedRow, error) {
@@ -792,7 +789,7 @@ func (b *sqliteBackend) deleteRows(ctx context.Context, op deleteRowsOp) error {
 		return nil
 	}
 
-	query, args := b.renderDelete(op, rowsFromKeys(op.keys))
+	query, args := b.renderDelete(op, op.keys)
 
 	_, err := b.execContext(ctx, query, args...)
 	return err

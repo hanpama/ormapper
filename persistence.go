@@ -30,15 +30,15 @@ func newPersistence(registry mappingRegistry, backend backend) *persistence {
 	}
 }
 
-func (u *persistence) scanEntity(em *entityMapping, entityPtr any, row rows, fieldNames []string) error {
+func (u *persistence) scanEntity(entityPtr any, row rows, fields []*field) error {
 	u.scanBuffer = u.scanBuffer[:0]
-	if cap(u.scanBuffer) < len(fieldNames) {
-		u.scanBuffer = make([]any, 0, len(fieldNames))
+	if cap(u.scanBuffer) < len(fields) {
+		u.scanBuffer = make([]any, 0, len(fields))
 	}
 
-	for _, name := range fieldNames {
-		field := em.fieldMap[name]
-		u.scanBuffer = append(u.scanBuffer, field.getPtr(entityPtr))
+	entityValue := reflect.ValueOf(entityPtr).Elem()
+	for _, field := range fields {
+		u.scanBuffer = append(u.scanBuffer, field.ptrFrom(entityValue))
 	}
 
 	return row.Scan(u.scanBuffer...)
@@ -67,7 +67,7 @@ func (u *persistence) getByKeys(ctx context.Context, em *entityMapping, ids []Ke
 	}
 	defer func() { _ = rowSet.Close() }()
 
-	return u.scanEntities(ctx, em, rowSet)
+	return u.scanEntities(ctx, em, rowSet, 0)
 }
 
 func (u *persistence) getByParentKeys(ctx context.Context, em *entityMapping, parentKeys []Key) ([]any, error) {
@@ -93,14 +93,14 @@ func (u *persistence) getByParentKeys(ctx context.Context, em *entityMapping, pa
 	}
 	defer func() { _ = rowSet.Close() }()
 
-	return u.scanEntities(ctx, em, rowSet)
+	return u.scanEntities(ctx, em, rowSet, 0)
 }
 
-func (u *persistence) scanEntities(ctx context.Context, em *entityMapping, rowSet rows) ([]any, error) {
-	entities := make([]any, 0)
+func (u *persistence) scanEntities(ctx context.Context, em *entityMapping, rowSet rows, expectedCapacity int) ([]any, error) {
+	entities := make([]any, 0, expectedCapacity)
 	for rowSet.Next() {
-		entityPtr := reflect.New(em.entityType).Interface()
-		if err := u.scanEntity(em, entityPtr, rowSet, em.allFields); err != nil {
+		entityPtr := em.newEntity()
+		if err := u.scanEntity(entityPtr, rowSet, em.allPlan.fields); err != nil {
 			return nil, err
 		}
 		entities = append(entities, entityPtr)
@@ -117,10 +117,10 @@ func (u *persistence) scanEntities(ctx context.Context, em *entityMapping, rowSe
 
 func (u *persistence) loadChildren(ctx context.Context, em *entityMapping, parents []any) error {
 	parentKeys := make([]Key, len(parents))
-	parentKeyToParent := make(map[Key]any, len(parents))
+	parentKeyToIndex := make(map[Key]int, len(parents))
 	for i, parent := range parents {
-		parentKeys[i] = em.extractKey(parent, em.primaryKey)
-		parentKeyToParent[parentKeys[i]] = parent
+		parentKeys[i] = em.extractPrimaryKey(parent)
+		parentKeyToIndex[parentKeys[i]] = i
 	}
 
 	for _, childField := range em.childFields {
@@ -135,28 +135,18 @@ func (u *persistence) loadChildren(ctx context.Context, em *entityMapping, paren
 			return err
 		}
 
-		estimatedCapacity := 4
-		if len(parents) > 0 {
-			estimatedCapacity = (len(childEntities) + len(parents) - 1) / len(parents)
-			if estimatedCapacity < 4 {
-				estimatedCapacity = 4
+		parentIndexes := make([]int, len(childEntities))
+		counts := make([]int, len(parents))
+		for i, childEntity := range childEntities {
+			parentIndexes[i] = -1
+			parentalKey := childMapping.extractParentalKey(childEntity)
+			if parentIndex, ok := parentKeyToIndex[parentalKey]; ok {
+				parentIndexes[i] = parentIndex
+				counts[parentIndex]++
 			}
 		}
 
-		childGroups := make(map[any][]any, len(parents))
-		for _, childEntity := range childEntities {
-			parentalKey := childMapping.extractKey(childEntity, childMapping.parentalKey)
-			if parent, ok := parentKeyToParent[parentalKey]; ok {
-				if childGroups[parent] == nil {
-					childGroups[parent] = make([]any, 0, estimatedCapacity)
-				}
-				childGroups[parent] = append(childGroups[parent], childEntity)
-			}
-		}
-
-		for _, parent := range parents {
-			child.set(parent, childGroups[parent])
-		}
+		child.setByParentIndexes(parents, childEntities, parentIndexes, counts)
 	}
 
 	return nil
@@ -203,13 +193,18 @@ func (u *persistence) saveInRelation(ctx context.Context, em *entityMapping, ent
 }
 
 func buildChildSaveSet(childMapping *entityMapping, relation *child, parents []saveResult) []any {
-	toSave := make([]any, 0)
+	childCount := 0
 	for _, result := range parents {
-		childEntities := relation.get(result.entity)
-		for _, childEntity := range childEntities {
+		childCount += relation.count(result.entity)
+	}
+
+	toSave := make([]any, 0, childCount)
+	for _, result := range parents {
+		start := len(toSave)
+		toSave = relation.appendTo(result.entity, toSave)
+		for _, childEntity := range toSave[start:] {
 			injectParentKey(childMapping, childEntity, result.key)
 		}
-		toSave = append(toSave, childEntities...)
 	}
 	return toSave
 }
@@ -226,12 +221,19 @@ func existingParentKeys(parents []saveResult) []Key {
 }
 
 func buildKeepPairs(childMapping *entityMapping, relation *child, parents []saveResult) []keepPair {
-	keepPairs := make([]keepPair, 0)
+	childCount := 0
 	for _, result := range parents {
-		for _, childEntity := range relation.get(result.entity) {
+		childCount += relation.count(result.entity)
+	}
+
+	keepPairs := make([]keepPair, 0, childCount)
+	childEntities := make([]any, 0)
+	for _, result := range parents {
+		childEntities = relation.appendTo(result.entity, childEntities[:0])
+		for _, childEntity := range childEntities {
 			keepPairs = append(keepPairs, keepPair{
 				parentKey: result.key,
-				childKey:  childMapping.extractKey(childEntity, childMapping.primaryKey),
+				childKey:  childMapping.extractPrimaryKey(childEntity),
 			})
 		}
 	}
@@ -239,8 +241,9 @@ func buildKeepPairs(childMapping *entityMapping, relation *child, parents []save
 }
 
 func injectParentKey(childMapping *entityMapping, childEntity any, parentKey Key) {
-	for i, fieldName := range childMapping.parentalKey {
-		childMapping.fieldMap[fieldName].setValue(childEntity, parentKey.At(i))
+	entityValue := reflect.ValueOf(childEntity).Elem()
+	for i, field := range childMapping.parentalPlan.fields {
+		field.setOn(entityValue, parentKey.At(i))
 	}
 }
 
@@ -321,18 +324,19 @@ func (u *persistence) loadChildRelationSnapshot(ctx context.Context, em *entityM
 	}
 	defer func() { _ = rowSet.Close() }()
 
-	parentTypes := em.fieldTypes(em.parentalKey)
-	childTypes := em.fieldTypes(em.primaryKey)
+	parentTypes := em.parentalPlan.types
+	childTypes := em.primaryPlan.types
+	parentValues := make([]any, len(parentTypes))
+	childValues := make([]any, len(childTypes))
+	dest := make([]any, 0, len(parentValues)+len(childValues))
+	for i := range parentValues {
+		dest = append(dest, &parentValues[i])
+	}
+	for i := range childValues {
+		dest = append(dest, &childValues[i])
+	}
+
 	for rowSet.Next() {
-		parentValues := make([]any, len(parentTypes))
-		childValues := make([]any, len(childTypes))
-		dest := make([]any, 0, len(parentValues)+len(childValues))
-		for i := range parentValues {
-			dest = append(dest, &parentValues[i])
-		}
-		for i := range childValues {
-			dest = append(dest, &childValues[i])
-		}
 		if err := rowSet.Scan(dest...); err != nil {
 			return nil, err
 		}
@@ -352,7 +356,7 @@ func (u *persistence) saveRows(ctx context.Context, em *entityMapping, entities 
 	saveOp := saveRowsOp{
 		schema: em.schema,
 		table:  em.table,
-		layout: em.saveLayout,
+		layout: &em.saveLayout.rows,
 	}
 	generatedInserts := make([]plannedRow, 0)
 	manualCandidates := make([]plannedRow, 0)
@@ -363,8 +367,9 @@ func (u *persistence) saveRows(ctx context.Context, em *entityMapping, entities 
 
 	for i, entity := range entities {
 		row := make([]any, len(em.saveLayout.rowFields))
-		for j, fieldName := range em.saveLayout.rowFields {
-			row[j] = em.fieldMap[fieldName].getValue(entity)
+		entityValue := reflect.ValueOf(entity).Elem()
+		for j, field := range em.saveLayout.rowFields {
+			row[j] = field.valueFrom(entityValue)
 		}
 		planned := plannedRow{index: i, row: saveRow{values: row}}
 		intent, err := saveOp.classifyRow(planned.row)
@@ -386,7 +391,7 @@ func (u *persistence) saveRows(ctx context.Context, em *entityMapping, entities 
 				generatedUpdates = append(generatedUpdates, planned)
 				continue
 			}
-			parentKey := em.extractKey(entity, em.parentalKey)
+			parentKey := em.extractParentalKey(entity)
 			childKey := saveOp.keyFromRow(planned.row)
 			if !relation.contains(parentKey, childKey) {
 				return nil, fmt.Errorf("%w: generated key %v does not exist in parent relation for %s", ErrStaleEntity, childKey, em.entityType)
@@ -397,7 +402,7 @@ func (u *persistence) saveRows(ctx context.Context, em *entityMapping, entities 
 				manualCandidates = append(manualCandidates, planned)
 				continue
 			}
-			parentKey := em.extractKey(entity, em.parentalKey)
+			parentKey := em.extractParentalKey(entity)
 			childKey := saveOp.keyFromRow(planned.row)
 			if relation.contains(parentKey, childKey) {
 				updateRows = append(updateRows, planned)
@@ -472,12 +477,12 @@ func (u *persistence) saveRows(ctx context.Context, em *entityMapping, entities 
 		}
 		seen[saved.index] = true
 
-		if err := u.applyReturnedValues(em, entities[saved.index], em.saveLayout.returningFields, saved.values); err != nil {
+		if err := u.applyReturnedValues(entities[saved.index], em.saveLayout.returningFields, saved.values); err != nil {
 			return nil, err
 		}
 		result[saved.index] = saveResult{
 			entity:   entities[saved.index],
-			key:      em.extractKey(entities[saved.index], em.primaryKey),
+			key:      em.extractPrimaryKey(entities[saved.index]),
 			inserted: inserted[saved.index],
 		}
 	}
@@ -500,17 +505,18 @@ func (u *persistence) selectExistingKeys(ctx context.Context, em *entityMapping,
 		schema:     em.schema,
 		table:      em.table,
 		keyColumns: em.primaryColumns,
-		keyTypes:   em.fieldTypes(em.primaryKey),
+		keyTypes:   em.primaryPlan.types,
 		keys:       keys,
 	})
 }
 
-func (u *persistence) applyReturnedValues(em *entityMapping, entity any, fieldNames []string, values []any) error {
-	if len(values) != len(fieldNames) {
-		return fmt.Errorf("expected %d returned values, got %d", len(fieldNames), len(values))
+func (u *persistence) applyReturnedValues(entity any, fields []*field, values []any) error {
+	if len(values) != len(fields) {
+		return fmt.Errorf("expected %d returned values, got %d", len(fields), len(values))
 	}
-	for i, name := range fieldNames {
-		em.fieldMap[name].setValue(entity, values[i])
+	entityValue := reflect.ValueOf(entity).Elem()
+	for i, field := range fields {
+		field.setOn(entityValue, values[i])
 	}
 	return nil
 }
@@ -563,7 +569,7 @@ func (u *persistence) loadKeysByParentKeys(ctx context.Context, em *entityMappin
 	}
 	defer func() { _ = rowSet.Close() }()
 
-	return scanTypedKeys(rowSet, em.fieldTypes(em.primaryKey))
+	return scanTypedKeys(rowSet, em.primaryPlan.types)
 }
 
 func uniqueKeys(keys []Key) []Key {

@@ -42,13 +42,14 @@ func scanKeyedSavedRows(op saveRowsOp, indexes []int, saveRows []saveRow, rowSet
 		inputByKey[key] = indexes[i]
 	}
 
-	valueRows, err := scanValueRows(rowSet, len(op.returningColumns()))
-	if err != nil {
-		return nil, err
-	}
-
-	saved := make([]savedRow, 0, len(valueRows))
-	for _, values := range valueRows {
+	returningColumnCount := len(op.returningColumns())
+	dest := make([]any, returningColumnCount)
+	saved := make([]savedRow, 0, len(saveRows))
+	for rowSet.Next() {
+		values := make([]any, returningColumnCount)
+		if err := scanRowValues(rowSet, values, dest); err != nil {
+			return nil, err
+		}
 		key := op.keyFromReturnedValues(values)
 		index, ok := inputByKey[key]
 		if !ok {
@@ -60,25 +61,31 @@ func scanKeyedSavedRows(op saveRowsOp, indexes []int, saveRows []saveRow, rowSet
 }
 
 func scanIndexedSavedRows(rowSet rows, returningColumns int) ([]savedRow, error) {
-	valueRows, err := scanValueRows(rowSet, returningColumns+1)
-	if err != nil {
-		return nil, err
-	}
-
-	saved := make([]savedRow, 0, len(valueRows))
-	for _, row := range valueRows {
-		index, err := intFromDB(row[0])
+	dest := make([]any, returningColumns+1)
+	saved := make([]savedRow, 0)
+	for rowSet.Next() {
+		var indexValue any
+		values := make([]any, returningColumns)
+		dest[0] = &indexValue
+		for i := range values {
+			dest[i+1] = &values[i]
+		}
+		if err := rowSet.Scan(dest...); err != nil {
+			return nil, err
+		}
+		index, err := intFromDB(normalizeScannedValue(indexValue))
 		if err != nil {
 			return nil, err
 		}
-		values := make([]any, returningColumns)
-		copy(values, row[1:])
+		for i, value := range values {
+			values[i] = normalizeScannedValue(value)
+		}
 		saved = append(saved, savedRow{index: index, values: values})
 	}
 	return saved, nil
 }
 
-func savedRowsBySingleIntKeyOrder(op saveRowsOp, indexes []int, valueRows [][]any) ([]savedRow, error) {
+func scanRowsBySingleIntKeyOrder(op saveRowsOp, indexes []int, rowSet rows) ([]savedRow, error) {
 	if op.primaryKeyCount() != 1 {
 		return nil, fmt.Errorf("ordered generated insert correlation requires one primary key")
 	}
@@ -87,14 +94,20 @@ func savedRowsBySingleIntKeyOrder(op saveRowsOp, indexes []int, valueRows [][]an
 		key    int64
 		values []any
 	}
-	keyed := make([]keyedRow, len(valueRows))
-	for i, values := range valueRows {
+	returningColumnCount := len(op.returningColumns())
+	dest := make([]any, returningColumnCount)
+	keyed := make([]keyedRow, 0, len(indexes))
+	for rowSet.Next() {
+		values := make([]any, returningColumnCount)
+		if err := scanRowValues(rowSet, values, dest); err != nil {
+			return nil, err
+		}
 		key := op.keyFromReturnedValues(values)
 		value, err := int64FromDB(key.At(0))
 		if err != nil {
 			return nil, err
 		}
-		keyed[i] = keyedRow{key: value, values: values}
+		keyed = append(keyed, keyedRow{key: value, values: values})
 	}
 	sort.Slice(keyed, func(i, j int) bool {
 		return keyed[i].key < keyed[j].key
@@ -155,35 +168,18 @@ func int64FromDB(value any) (int64, error) {
 	}
 }
 
-func rowsFromKeys(keys []Key) [][]any {
-	if len(keys) == 0 {
-		return nil
-	}
-
-	values := make([][]any, len(keys))
-	for i, key := range keys {
-		row := make([]any, key.Length())
-		for j := 0; j < key.Length(); j++ {
-			row[j] = key.At(j)
-		}
-		values[i] = row
-	}
-
-	return values
-}
-
 func scanTypedKeys(rowSet rows, keyTypes []reflect.Type) ([]Key, error) {
 	if len(keyTypes) == 0 {
 		return nil, nil
 	}
 
 	keys := make([]Key, 0)
+	values := make([]any, len(keyTypes))
+	dest := make([]any, len(keyTypes))
+	for i := range values {
+		dest[i] = &values[i]
+	}
 	for rowSet.Next() {
-		values := make([]any, len(keyTypes))
-		dest := make([]any, len(keyTypes))
-		for i := range values {
-			dest[i] = &values[i]
-		}
 		if err := rowSet.Scan(dest...); err != nil {
 			return nil, err
 		}
@@ -196,23 +192,17 @@ func scanTypedKeys(rowSet rows, keyTypes []reflect.Type) ([]Key, error) {
 	return keys, nil
 }
 
-func scanValueRows(rowSet rows, columnCount int) ([][]any, error) {
-	valueRows := make([][]any, 0)
-	for rowSet.Next() {
-		values := make([]any, columnCount)
-		dest := make([]any, columnCount)
-		for i := range values {
-			dest[i] = &values[i]
-		}
-		if err := rowSet.Scan(dest...); err != nil {
-			return nil, err
-		}
-		for i, value := range values {
-			values[i] = normalizeScannedValue(value)
-		}
-		valueRows = append(valueRows, values)
+func scanRowValues(rowSet rows, values []any, dest []any) error {
+	for i := range values {
+		dest[i] = &values[i]
 	}
-	return valueRows, nil
+	if err := rowSet.Scan(dest...); err != nil {
+		return err
+	}
+	for i, value := range values {
+		values[i] = normalizeScannedValue(value)
+	}
+	return nil
 }
 
 func normalizeScannedValue(value any) any {

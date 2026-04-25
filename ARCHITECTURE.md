@@ -234,6 +234,29 @@ Dialect 책임:
 - batch update with returning or affected-row verification
 - delete by key
 
+Compile 결과는 두 종류의 실행 계획으로 나뉜다.
+
+Entity execution plan:
+
+- entity constructor
+- scan field plan
+- primary/parental key field plan
+- save row projection field plan
+- returning field application plan
+- child relation field plan
+
+이 plan은 persistence 공통부만 사용한다. Root, child, grandchild materialization은 모두 mapping의 entity constructor를 통해 한 경로로 수행된다.
+
+SQL operation plan:
+
+- table/schema
+- select/insert/update/returning column list
+- key columns and key values
+- projected save rows
+- row correlation indexes
+
+Dialect는 SQL operation plan만 받는다. Dialect가 entity field, child relation, aggregate ownership, stale consistency rule을 직접 보면 안 된다. 이 경계가 유지되어야 공통 graph planner가 public semantic을 보존하고, dialect는 batch SQL shape만 최적화할 수 있다.
+
 목표 backend interface:
 
 ```go
@@ -555,10 +578,11 @@ persistence.go
   It receives mappingRegistry and backend, not Mapper.
 
 mapping.go / mapping_key.go / registry.go
-  Compiled entity metadata, key extraction, and lookup.
+  Compiled entity execution plans, key extraction, and lookup.
 
 operations.go / backend_helpers.go
   Backend operation DTOs and shared scan/key helpers.
+  Backend ops must not expose entity field or relation plans.
 ```
 
 Important dependency rules:
@@ -567,5 +591,6 @@ Important dependency rules:
 - `backend.go` never imports or references `postgres.go` or `sqlite.go`.
 - `persistence.go` never depends on `Mapper`.
 - `mapping.go` never depends on persistence helpers.
+- backend operation plans must not carry entity field or child relation metadata.
 - relation graph helpers stay inside `persistence.go`; no separate cross-referencing `save_graph.go`.
 - key extraction belongs to mapping, hence `mapping_key.go`, not a generic `extract.go`.

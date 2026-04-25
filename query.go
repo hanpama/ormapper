@@ -228,19 +228,9 @@ func (q *Query[T]) fetch(ctx context.Context, limit *int) ([]*T, error) {
 	}
 
 	u := newPersistence(q.mapper.mappings, backend)
-	entities := make([]any, 0, expectedCapacity)
-	for rows.Next() {
-		entityPtr := reflect.New(q.mapping.entityType).Interface()
-		if err := u.scanEntity(q.mapping, entityPtr, rows, q.mapping.allFields); err != nil {
-			return nil, err
-		}
-		entities = append(entities, entityPtr)
-	}
-
-	if len(entities) > 0 && len(q.mapping.childMap) > 0 {
-		if err := u.loadChildren(ctx, q.mapping, entities); err != nil {
-			return nil, err
-		}
+	entities, err := u.scanEntities(ctx, q.mapping, rows, expectedCapacity)
+	if err != nil {
+		return nil, err
 	}
 
 	result := make([]*T, 0, len(entities))

@@ -275,10 +275,10 @@ func (b *postgreSQLBackend) renderSQLQuery(stmt sqlQuery) (string, []any) {
 // Query format: WITH "$k" (col1, col2) AS (VALUES ($1, $2), ($3, $4))
 //
 //	SELECT table.* FROM table JOIN "$k" ON table.col1 = "$k".col1 AND table.col2 = "$k".col2
-func (b *postgreSQLBackend) renderSelect(stmt loadRowsOp, chunk [][]any) (string, []any) {
+func (b *postgreSQLBackend) renderSelect(stmt loadRowsOp, keys []Key) (string, []any) {
 	b.paramIndex = 0
 	numKeyColumns := len(stmt.keyColumns)
-	b.resetArgsBuffer(len(chunk) * numKeyColumns)
+	b.resetArgsBuffer(len(keys) * numKeyColumns)
 
 	b.resetSQLBuffer(512)
 
@@ -291,7 +291,7 @@ func (b *postgreSQLBackend) renderSelect(stmt loadRowsOp, chunk [][]any) (string
 	}
 	b.writeString(") AS (VALUES ")
 
-	for idx, row := range chunk {
+	for idx, key := range keys {
 		if idx > 0 {
 			b.writeString(", ")
 		}
@@ -315,7 +315,7 @@ func (b *postgreSQLBackend) renderSelect(stmt loadRowsOp, chunk [][]any) (string
 				b.writeByte('$')
 				b.writeString(strconv.Itoa(b.paramIndex))
 			}
-			b.argsBuffer = append(b.argsBuffer, row[j])
+			b.argsBuffer = append(b.argsBuffer, key.At(j))
 		}
 		b.writeByte(')')
 	}
@@ -349,10 +349,10 @@ func (b *postgreSQLBackend) renderSelect(stmt loadRowsOp, chunk [][]any) (string
 	return b.sqlString(), b.argsBuffer
 }
 
-func (b *postgreSQLBackend) renderSelectExistingKeys(stmt keyScanOp, chunk [][]any) (string, []any) {
+func (b *postgreSQLBackend) renderSelectExistingKeys(stmt keyScanOp, keys []Key) (string, []any) {
 	b.paramIndex = 0
 	numKeyColumns := len(stmt.keyColumns)
-	b.resetArgsBuffer(len(chunk) * numKeyColumns)
+	b.resetArgsBuffer(len(keys) * numKeyColumns)
 	b.resetSQLBuffer(512)
 
 	b.writeString("WITH \"$k\" (")
@@ -364,7 +364,7 @@ func (b *postgreSQLBackend) renderSelectExistingKeys(stmt keyScanOp, chunk [][]a
 	}
 	b.writeString(") AS (VALUES ")
 
-	for idx, row := range chunk {
+	for idx, key := range keys {
 		if idx > 0 {
 			b.writeString(", ")
 		}
@@ -386,7 +386,7 @@ func (b *postgreSQLBackend) renderSelectExistingKeys(stmt keyScanOp, chunk [][]a
 				b.writeByte('$')
 				b.writeString(strconv.Itoa(b.paramIndex))
 			}
-			b.argsBuffer = append(b.argsBuffer, row[j])
+			b.argsBuffer = append(b.argsBuffer, key.At(j))
 		}
 		b.writeByte(')')
 	}
@@ -697,10 +697,10 @@ func (b *postgreSQLBackend) renderUpdateRows(stmt saveRowsOp, rows []saveRow) (s
 // Query format: WITH keys AS (SELECT id FROM table WHERE FALSE UNION ALL VALUES ($1), ($2))
 //
 //	DELETE FROM table WHERE id IN (SELECT id FROM keys)
-func (b *postgreSQLBackend) renderDelete(stmt deleteRowsOp, chunk [][]any) (string, []any) {
+func (b *postgreSQLBackend) renderDelete(stmt deleteRowsOp, keys []Key) (string, []any) {
 	b.paramIndex = 0
 	numKeyColumns := len(stmt.keyColumns)
-	b.resetArgsBuffer(len(chunk) * numKeyColumns)
+	b.resetArgsBuffer(len(keys) * numKeyColumns)
 
 	b.resetSQLBuffer(512)
 
@@ -713,7 +713,7 @@ func (b *postgreSQLBackend) renderDelete(stmt deleteRowsOp, chunk [][]any) (stri
 	}
 	b.writeString(") AS (VALUES ")
 
-	for idx, row := range chunk {
+	for idx, key := range keys {
 		if idx > 0 {
 			b.writeString(", ")
 		}
@@ -737,7 +737,7 @@ func (b *postgreSQLBackend) renderDelete(stmt deleteRowsOp, chunk [][]any) (stri
 				b.writeByte('$')
 				b.writeString(strconv.Itoa(b.paramIndex))
 			}
-			b.argsBuffer = append(b.argsBuffer, row[j])
+			b.argsBuffer = append(b.argsBuffer, key.At(j))
 		}
 		b.writeByte(')')
 	}
@@ -778,7 +778,7 @@ func (b *postgreSQLBackend) LoadRows(ctx context.Context, op loadRowsOp) (rows, 
 		return &emptyRows{}, nil
 	}
 
-	query, args := b.renderSelect(op, rowsFromKeys(op.keys))
+	query, args := b.renderSelect(op, op.keys)
 	return b.queryContext(ctx, query, args...)
 }
 
@@ -787,7 +787,7 @@ func (b *postgreSQLBackend) SelectExistingKeys(ctx context.Context, op keyScanOp
 		return nil, nil
 	}
 
-	query, args := b.renderSelectExistingKeys(op, rowsFromKeys(op.keys))
+	query, args := b.renderSelectExistingKeys(op, op.keys)
 	rowSet, err := b.queryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
@@ -880,7 +880,7 @@ func (b *postgreSQLBackend) deleteRows(ctx context.Context, op deleteRowsOp) err
 		return nil
 	}
 
-	query, args := b.renderDelete(op, rowsFromKeys(op.keys))
+	query, args := b.renderDelete(op, op.keys)
 
 	_, err := b.execContext(ctx, query, args...)
 	return err
