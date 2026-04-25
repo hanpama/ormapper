@@ -24,19 +24,16 @@ type rows interface {
 	Next() bool
 	Scan(dest ...any) error
 	Close() error
-	Columns() ([]string, error)
 }
 
 type emptyRows struct{}
 
-func (e *emptyRows) Next() bool                 { return false }
-func (e *emptyRows) Scan(dest ...any) error     { return nil }
-func (e *emptyRows) Close() error               { return nil }
-func (e *emptyRows) Columns() ([]string, error) { return nil, nil }
+func (e *emptyRows) Next() bool             { return false }
+func (e *emptyRows) Scan(dest ...any) error { return nil }
+func (e *emptyRows) Close() error           { return nil }
 
 type backend interface {
-	LoadByKeys(ctx context.Context, op loadRowsOp) (rows, error)
-	LoadByParentKeys(ctx context.Context, op loadRowsOp) (rows, error)
+	LoadRows(ctx context.Context, op loadRowsOp) (rows, error)
 	SelectExistingKeys(ctx context.Context, op keyScanOp) ([]Key, error)
 	InsertRows(ctx context.Context, op saveRowsOp, rows []plannedRow) ([]savedRow, error)
 	UpdateRows(ctx context.Context, op saveRowsOp, rows []plannedRow) ([]savedRow, error)

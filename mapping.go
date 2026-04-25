@@ -112,17 +112,13 @@ type entityMapping struct {
 	updatable   []string
 
 	// Pre-computed column lists (private, immutable after initialization)
-	allColumns             []string
-	primaryColumns         []string
-	parentalColumns        []string
-	insertableColumns      []string
-	updatableColumns       []string
-	insertReturningColumns []string
+	allColumns        []string
+	primaryColumns    []string
+	parentalColumns   []string
+	insertableColumns []string
+	updatableColumns  []string
 
-	// Pre-computed field name lists for RETURNING operations
-	insertReturning []string
-	saveFields      []string
-	saveFieldSet    []saveField
+	saveLayout *saveLayout
 }
 
 func newEntityMapping(
@@ -139,25 +135,22 @@ func newEntityMapping(
 	updatable []string,
 ) *entityMapping {
 	em := &entityMapping{
-		entityType:             entityType,
-		schema:                 schema,
-		table:                  table,
-		fieldMap:               fieldMap,
-		childMap:               childMap,
-		childFields:            childFields,
-		allFields:              allFields,
-		primaryKey:             primaryKey,
-		parentalKey:            parentalKey,
-		insertable:             insertable,
-		updatable:              updatable,
-		allColumns:             make([]string, 0, len(allFields)),
-		primaryColumns:         make([]string, 0, len(primaryKey)),
-		parentalColumns:        make([]string, 0, len(parentalKey)),
-		insertableColumns:      make([]string, 0, len(insertable)),
-		updatableColumns:       make([]string, 0, len(updatable)),
-		insertReturningColumns: make([]string, 0, len(allFields)),
-		saveFields:             make([]string, 0, len(allFields)),
-		saveFieldSet:           make([]saveField, 0, len(allFields)),
+		entityType:        entityType,
+		schema:            schema,
+		table:             table,
+		fieldMap:          fieldMap,
+		childMap:          childMap,
+		childFields:       childFields,
+		allFields:         allFields,
+		primaryKey:        primaryKey,
+		parentalKey:       parentalKey,
+		insertable:        insertable,
+		updatable:         updatable,
+		allColumns:        make([]string, 0, len(allFields)),
+		primaryColumns:    make([]string, 0, len(primaryKey)),
+		parentalColumns:   make([]string, 0, len(parentalKey)),
+		insertableColumns: make([]string, 0, len(insertable)),
+		updatableColumns:  make([]string, 0, len(updatable)),
 	}
 	for _, name := range allFields {
 		em.allColumns = append(em.allColumns, fieldMap[name].column)
@@ -174,34 +167,80 @@ func newEntityMapping(
 	for _, name := range updatable {
 		em.updatableColumns = append(em.updatableColumns, fieldMap[name].column)
 	}
-	for _, name := range allFields {
-		if slices.Contains(insertable, name) || slices.Contains(primaryKey, name) || slices.Contains(updatable, name) {
-			em.saveFields = append(em.saveFields, name)
-		}
-	}
-	for _, name := range em.saveFields {
-		em.saveFieldSet = append(em.saveFieldSet, saveField{
-			name:       name,
-			column:     fieldMap[name].column,
-			typ:        fieldMap[name].typ,
-			primaryKey: slices.Contains(primaryKey, name),
-			generated:  !slices.Contains(insertable, name),
-			insertable: slices.Contains(insertable, name),
-			updatable:  slices.Contains(updatable, name),
-		})
-	}
-
-	em.insertReturning = append(em.insertReturning, primaryKey...)
-	for _, name := range allFields {
-		if !slices.Contains(insertable, name) && !slices.Contains(primaryKey, name) {
-			em.insertReturning = append(em.insertReturning, name)
-		}
-	}
-	for _, name := range em.insertReturning {
-		em.insertReturningColumns = append(em.insertReturningColumns, fieldMap[name].column)
-	}
+	em.saveLayout = newSaveLayout(fieldMap, allFields, primaryKey, insertable, updatable)
 
 	return em
+}
+
+func newSaveLayout(
+	fieldMap map[string]*field,
+	allFields []string,
+	primaryKey []string,
+	insertable []string,
+	updatable []string,
+) *saveLayout {
+	layout := &saveLayout{
+		rowFields:                         make([]string, 0, len(allFields)),
+		rowColumns:                        make([]string, 0, len(allFields)),
+		insertColumns:                     make([]string, 0, len(insertable)),
+		insertIndexes:                     make([]int, 0, len(insertable)),
+		insertColumnsWithGeneratedPrimary: make([]string, 0, len(insertable)+len(primaryKey)),
+		updateColumns:                     make([]string, 0, len(updatable)),
+		primaryColumns:                    make([]string, 0, len(primaryKey)),
+		primaryIndexes:                    make([]int, 0, len(primaryKey)),
+		primaryTypes:                      make([]reflect.Type, 0, len(primaryKey)),
+		generatedPrimaryColumns:           make([]string, 0, len(primaryKey)),
+		generatedPrimaryIndexes:           make([]int, 0, len(primaryKey)),
+		returningFields:                   make([]string, 0, len(allFields)),
+		returningColumns:                  make([]string, 0, len(allFields)),
+		primaryReturningIndexes:           make([]int, 0, len(primaryKey)),
+	}
+
+	for _, name := range allFields {
+		if slices.Contains(insertable, name) || slices.Contains(primaryKey, name) || slices.Contains(updatable, name) {
+			layout.rowFields = append(layout.rowFields, name)
+			layout.rowColumns = append(layout.rowColumns, fieldMap[name].column)
+		}
+	}
+
+	for i, name := range layout.rowFields {
+		if slices.Contains(insertable, name) {
+			layout.insertColumns = append(layout.insertColumns, fieldMap[name].column)
+			layout.insertIndexes = append(layout.insertIndexes, i)
+		}
+		if slices.Contains(updatable, name) {
+			layout.updateColumns = append(layout.updateColumns, fieldMap[name].column)
+		}
+	}
+
+	for _, name := range primaryKey {
+		column := fieldMap[name].column
+		layout.primaryColumns = append(layout.primaryColumns, column)
+		layout.primaryIndexes = append(layout.primaryIndexes, slices.Index(layout.rowFields, name))
+		layout.primaryTypes = append(layout.primaryTypes, fieldMap[name].typ)
+		if !slices.Contains(insertable, name) {
+			layout.generatedPrimaryColumns = append(layout.generatedPrimaryColumns, column)
+			layout.generatedPrimaryIndexes = append(layout.generatedPrimaryIndexes, slices.Index(layout.rowFields, name))
+		}
+	}
+
+	layout.insertColumnsWithGeneratedPrimary = append(layout.insertColumnsWithGeneratedPrimary, layout.generatedPrimaryColumns...)
+	layout.insertColumnsWithGeneratedPrimary = append(layout.insertColumnsWithGeneratedPrimary, layout.insertColumns...)
+
+	layout.returningFields = append(layout.returningFields, primaryKey...)
+	for _, name := range allFields {
+		if !slices.Contains(insertable, name) && !slices.Contains(primaryKey, name) {
+			layout.returningFields = append(layout.returningFields, name)
+		}
+	}
+	for _, name := range layout.returningFields {
+		layout.returningColumns = append(layout.returningColumns, fieldMap[name].column)
+	}
+	for _, column := range layout.primaryColumns {
+		layout.primaryReturningIndexes = append(layout.primaryReturningIndexes, slices.Index(layout.returningColumns, column))
+	}
+
+	return layout
 }
 
 func (em *entityMapping) fieldTypes(fieldNames []string) []reflect.Type {

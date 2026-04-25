@@ -39,6 +39,46 @@ type mappingTestComposite struct {
 	Name string
 }
 
+type invalidNoPrimary struct {
+	Name string
+}
+
+type invalidExplicitChild struct {
+	ID  int64
+	Bad int `ormapper:"child"`
+}
+
+type invalidUnregisteredChildParent struct {
+	ID    int64
+	Child *unregisteredMappingStruct `ormapper:"child"`
+}
+
+type invalidChildWithoutParentalParent struct {
+	ID    int64
+	Child *invalidChildWithoutParental
+}
+
+type invalidChildWithoutParental struct {
+	ID   int64
+	Name string
+}
+
+type invalidKeyTypeParent struct {
+	ID       int64
+	Children []*invalidKeyTypeChild
+}
+
+type invalidKeyTypeChild struct {
+	ID       int64
+	ParentID int `ormapper:"parental"`
+}
+
+type invalidGeneratedComposite struct {
+	ID       int64 `ormapper:"auto"`
+	TenantID int64 `ormapper:"primary"`
+	Name     string
+}
+
 func TestToSnakeCase(t *testing.T) {
 	cases := map[string]string{
 		"ID":           "id",
@@ -126,5 +166,26 @@ func TestCompileInvalidMappings(t *testing.T) {
 	}
 	if _, err := Compile(SQLite, Map(new(int))); err == nil {
 		t.Fatal("expected pointer-to-non-struct error")
+	}
+	if _, err := Compile(SQLite, Map(&mappingTestParent{}), Map(&mappingTestParent{})); err == nil {
+		t.Fatal("expected duplicate mapping error")
+	}
+	if _, err := Compile(SQLite, Map(&invalidNoPrimary{})); err == nil {
+		t.Fatal("expected no-primary-key mapping error")
+	}
+	if _, err := Compile(SQLite, Map(&invalidExplicitChild{})); err == nil {
+		t.Fatal("expected invalid explicit child mapping error")
+	}
+	if _, err := Compile(SQLite, Map(&invalidUnregisteredChildParent{})); err == nil {
+		t.Fatal("expected unregistered explicit child target error")
+	}
+	if _, err := Compile(SQLite, Map(&invalidChildWithoutParentalParent{}), Map(&invalidChildWithoutParental{})); err == nil {
+		t.Fatal("expected child without parental key error")
+	}
+	if _, err := Compile(SQLite, Map(&invalidKeyTypeParent{}), Map(&invalidKeyTypeChild{})); err == nil {
+		t.Fatal("expected parent/child key type mismatch error")
+	}
+	if _, err := Compile(SQLite, Map(&invalidGeneratedComposite{})); err == nil {
+		t.Fatal("expected generated composite primary key error")
 	}
 }

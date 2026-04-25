@@ -28,6 +28,7 @@ func Run(t *testing.T, f Fixture) {
 		t.Run("SpecialQuote", func(t *testing.T) { runSpecialQuote(t, f) })
 		t.Run("AggregateSave", func(t *testing.T) { runAggregateSave(t, f) })
 		t.Run("GeneratedChildMustExistUnderParent", func(t *testing.T) { runGeneratedChildMustExistUnderParent(t, f) })
+		t.Run("DuplicateSubmittedChildKeyFails", func(t *testing.T) { runDuplicateSubmittedChildKeyFails(t, f) })
 		t.Run("SingularChildNilDeletes", func(t *testing.T) { runSingularChildNilDeletes(t, f) })
 		t.Run("IdentifyingChild", func(t *testing.T) { runIdentifyingChild(t, f) })
 		t.Run("DeleteAggregate", func(t *testing.T) { runDeleteAggregate(t, f) })
@@ -382,6 +383,26 @@ func runGeneratedChildMustExistUnderParent(t *testing.T, f Fixture) {
 	rows := countRows(t, ctx, f.DB, "SELECT COUNT(*) FROM order_items WHERE id = "+f.Placeholder(1)+" AND order_id = "+f.Placeholder(2), moved.ID, source.ID)
 	if rows != 1 {
 		t.Fatal("failed child reparent attempt should not move the stored row")
+	}
+}
+
+func runDuplicateSubmittedChildKeyFails(t *testing.T, f Fixture) {
+	ctx := reset(t, f)
+	m := mapperFor(f.Dialect)
+
+	root := &order{
+		CustomerID: 30,
+		Total:      30,
+		Items:      []*orderItem{{Name: "dup", Qty: 1}},
+	}
+	if err := m.Save(ctx, f.DB, root); err != nil {
+		t.Fatalf("Save aggregate: %v", err)
+	}
+
+	item := root.Items[0]
+	root.Items = []*orderItem{item, item}
+	if err := m.Save(ctx, f.DB, root); !errors.Is(err, ormapper.ErrConsistency) {
+		t.Fatalf("expected duplicate submitted child key consistency error, got %v", err)
 	}
 }
 

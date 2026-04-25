@@ -187,7 +187,7 @@ Generated insert candidate는 existence scan을 하지 않는다. insert 때 aut
 Child relation은 parent key로 기존 child key들을 먼저 batch load한다.
 
 ```text
-LoadByParentKeys(parentKeys, select parentKey + childPrimaryKey) => relationState
+LoadRows(parentKeys, select parentKey + childPrimaryKey) => childRelationSnapshot
 ```
 
 그 relation state 하나로 세 가지 판단을 모두 수행한다.
@@ -238,8 +238,7 @@ Dialect 책임:
 
 ```go
 type backend interface {
-    LoadByKeys(ctx context.Context, op loadRowsOp) (rows, error)
-    LoadByParentKeys(ctx context.Context, op loadRowsOp) (rows, error)
+    LoadRows(ctx context.Context, op loadRowsOp) (rows, error)
     SelectExistingKeys(ctx context.Context, op keyScanOp) ([]Key, error)
 
     InsertRows(ctx context.Context, op saveRowsOp, rows []plannedRow) ([]savedRow, error)

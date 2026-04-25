@@ -42,7 +42,7 @@ func scanKeyedSavedRows(op saveRowsOp, indexes []int, saveRows []saveRow, rowSet
 		inputByKey[key] = indexes[i]
 	}
 
-	valueRows, err := scanValueRows(rowSet, len(op.returning))
+	valueRows, err := scanValueRows(rowSet, len(op.returningColumns()))
 	if err != nil {
 		return nil, err
 	}
@@ -79,7 +79,7 @@ func scanIndexedSavedRows(rowSet rows, returningColumns int) ([]savedRow, error)
 }
 
 func savedRowsBySingleIntKeyOrder(op saveRowsOp, indexes []int, valueRows [][]any) ([]savedRow, error) {
-	if len(op.primaryFields()) != 1 {
+	if op.primaryKeyCount() != 1 {
 		return nil, fmt.Errorf("ordered generated insert correlation requires one primary key")
 	}
 

@@ -74,6 +74,9 @@ func Compile(dialect Dialect, mappings ...Mapping) (*Mapper, error) {
 		}
 
 		entityType := entityPtrType.Elem()
+		if registered[entityType] {
+			return nil, fmt.Errorf("Compile: duplicate mapping for %s", entityType)
+		}
 		entityMeta := entityMetadata{
 			Table:  toSnakeCase(entityType.Name()),
 			Fields: analyzeStruct(entityType),
@@ -86,9 +89,14 @@ func Compile(dialect Dialect, mappings ...Mapping) (*Mapper, error) {
 		meta[entityType] = entityMeta
 	}
 
+	registry := buildEntityMappings(meta, registered)
+	if err := validateMappings(registry); err != nil {
+		return nil, err
+	}
+
 	return &Mapper{
 		dialect:  dialect,
-		mappings: buildEntityMappings(meta, registered),
+		mappings: registry,
 	}, nil
 }
 
@@ -197,6 +205,43 @@ func buildEntityMappings(
 	}
 
 	return result
+}
+
+func validateMappings(registry mappingRegistry) error {
+	for _, em := range registry {
+		if len(em.primaryKey) == 0 {
+			return fmt.Errorf("Compile: entity %s has no primary key", em.entityType)
+		}
+		if len(em.saveLayout.generatedPrimaryIndexes) > 0 && len(em.primaryKey) != 1 {
+			return fmt.Errorf("%w: entity %s has generated composite primary key", ErrUnsupportedSemantic, em.entityType)
+		}
+
+		for _, childField := range em.childFields {
+			child := em.childMap[childField]
+			if child.target == nil {
+				return fmt.Errorf("Compile: child field %s.%s must be a pointer to a mapped entity or a slice of mapped entity pointers", em.entityType, childField)
+			}
+			childMapping, ok := registry[child.target]
+			if !ok {
+				return fmt.Errorf("Compile: child field %s.%s target %s is not registered", em.entityType, childField, child.target)
+			}
+			if len(childMapping.parentalKey) == 0 {
+				return fmt.Errorf("Compile: child entity %s has no parental key for %s.%s", childMapping.entityType, em.entityType, childField)
+			}
+			if len(em.primaryKey) != len(childMapping.parentalKey) {
+				return fmt.Errorf("Compile: parent key %s.%v and child parental key %s.%v have different arity", em.entityType, em.primaryKey, childMapping.entityType, childMapping.parentalKey)
+			}
+			for i, parentField := range em.primaryKey {
+				childField := childMapping.parentalKey[i]
+				parentType := em.fieldMap[parentField].typ
+				childType := childMapping.fieldMap[childField].typ
+				if parentType != childType {
+					return fmt.Errorf("Compile: parent key %s.%s type %s does not match child parental key %s.%s type %s", em.entityType, parentField, parentType, childMapping.entityType, childField, childType)
+				}
+			}
+		}
+	}
+	return nil
 }
 
 func buildSingleMapping(

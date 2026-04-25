@@ -14,9 +14,8 @@ graph TD
   mapper_go["mapper.go\npublic Mapper API"]
   query_go["query.go\npublic Query API"]
 
-  analyze_go["analyze.go\nstruct tag analysis"]
   registry_go["registry.go\nmapping lookup"]
-  mapping_go["mapping.go\nentity metadata and reflect access"]
+  mapping_go["mapping.go\nentity metadata, save layout, reflect access"]
   mapping_key_go["mapping_key.go\nentityMapping.ExtractKey"]
 
   persistence_go["persistence.go\ngraph save/load/delete orchestration"]
@@ -33,10 +32,8 @@ graph TD
   package_go --> sqlite_go
   package_go --> backend_go
 
-  compile_go --> analyze_go
   compile_go --> mapper_go
   compile_go --> backend_go
-  compile_go --> analyze_go
   compile_go --> mapping_go
   compile_go --> registry_go
 
@@ -53,6 +50,7 @@ graph TD
 
   registry_go --> mapping_go
   mapping_go --> key_go
+  mapping_go --> operations_go
   mapping_key_go --> mapping_go
   mapping_key_go --> key_go
 
@@ -70,7 +68,6 @@ graph TD
 
   operations_go --> errors_go
   operations_go --> key_go
-  operations_go --> mapping_go
 
   backend_helpers_go --> backend_go
   backend_helpers_go --> operations_go
@@ -110,12 +107,11 @@ graph TD
 |---|---|
 | `package.go` | Package documentation and built-in dialect entry points. |
 | `backend.go` | Public DB handle abstraction plus internal backend contract. |
-| `compile.go` | Public mapping registration plus private mapping construction subroutines. |
-| `analyze.go` | Struct field and tag analysis. |
+| `compile.go` | Public mapping registration, struct tag analysis, validation, and private mapping construction subroutines. |
 | `registry.go` | Mapping lookup abstraction shared by Mapper and persistence. |
 | `mapper.go` | Public aggregate API: `Get`, `Save`, `Delete`. |
 | `query.go` | Public typed query API. |
-| `mapping.go` | Compiled entity metadata, child metadata, and reflect accessors. |
+| `mapping.go` | Compiled entity metadata, save layout, child metadata, and reflect accessors. |
 | `mapping_key.go` | Key extraction from compiled entity mappings. |
 | `persistence.go` | Stateless graph persistence orchestration. |
 | `operations.go` | High-level backend operation DTOs and operation helpers. |
@@ -132,15 +128,16 @@ graph TD
   methods moved to engine files.
 - `doc.go`: package documentation moved to `package.go`.
 - `build.go`: compile subroutines moved under `compile.go`.
+- `analyze.go`: struct tag analysis moved under `compile.go`.
 - `persistence_op.go`: renamed and merged into `persistence.go`.
 - `save_graph.go`: merged into `persistence.go`.
 - `extract.go`: renamed to `mapping_key.go`.
 
 ## Remaining Tensions
 
-- `operations.go` still uses `saveField`, which is mapping-derived metadata.
-  This is acceptable for now because backend operations need column-level field
-  flags, but the type name may eventually become more backend-neutral.
+- `mapping.go` currently builds `saveLayout`, whose type is declared beside
+  backend operation DTOs in `operations.go`. This keeps the persistence/backend
+  contract in one place, but it is still a mapping-derived layout.
 - `postgres.go` and `sqlite.go` are intentionally large because each keeps SQL
   rendering and execution together. Splitting renderers later should be based on
   evidence from readability or test friction, not file length alone.

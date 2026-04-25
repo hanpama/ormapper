@@ -13,7 +13,8 @@ type Query[T any] struct {
 	db           DBTX
 	mapping      *entityMapping
 	alias        string
-	joins        map[string]*join
+	joins        []join
+	joinIndexes  map[string]int
 	whereConds   []sqlNode
 	havingConds  []sqlNode
 	orderByOpts  []OrderExpr
@@ -51,7 +52,8 @@ func NewQuery[T any](mapper *Mapper, db DBTX, alias string) *Query[T] {
 		db:           db,
 		mapping:      mapping,
 		alias:        alias,
-		joins:        make(map[string]*join),
+		joins:        []join{},
+		joinIndexes:  make(map[string]int),
 		whereConds:   []sqlNode{},
 		havingConds:  []sqlNode{},
 		orderByOpts:  []OrderExpr{},
@@ -61,24 +63,33 @@ func NewQuery[T any](mapper *Mapper, db DBTX, alias string) *Query[T] {
 
 // Join adds an INNER JOIN clause.
 func (q *Query[T]) Join(table string, alias string, on string, params ...any) *Query[T] {
-	q.joins[alias] = &join{
+	q.setJoin(alias, join{
 		typ:   "JOIN",
 		table: sqlText{text: table},
 		alias: sqlText{text: alias},
 		on:    parseSQL(on, params...),
-	}
+	})
 	return q
 }
 
 // LeftJoin adds a LEFT JOIN clause.
 func (q *Query[T]) LeftJoin(table string, alias string, on string, params ...any) *Query[T] {
-	q.joins[alias] = &join{
+	q.setJoin(alias, join{
 		typ:   "LEFT JOIN",
 		table: sqlText{text: table},
 		alias: sqlText{text: alias},
 		on:    parseSQL(on, params...),
-	}
+	})
 	return q
+}
+
+func (q *Query[T]) setJoin(alias string, join join) {
+	if index, ok := q.joinIndexes[alias]; ok {
+		q.joins[index] = join
+		return
+	}
+	q.joinIndexes[alias] = len(q.joins)
+	q.joins = append(q.joins, join)
 }
 
 // Where appends a WHERE predicate combined with AND.
@@ -152,10 +163,8 @@ func (q *Query[T]) buildPrimaryKeyColumns() []sqlNode {
 }
 
 func (q *Query[T]) buildJoins() []join {
-	joins := make([]join, 0, len(q.joins))
-	for _, join := range q.joins {
-		joins = append(joins, *join)
-	}
+	joins := make([]join, len(q.joins))
+	copy(joins, q.joins)
 	return joins
 }
 

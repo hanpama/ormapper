@@ -375,8 +375,8 @@ func (b *sqliteBackend) renderSelectExistingKeys(stmt keyScanOp, chunk [][]any) 
 }
 
 func (b *sqliteBackend) renderGeneratedInsertRows(stmt saveRowsOp, indexes []int, rows []saveRow, useSQLiteSequence bool) (string, []any, error) {
-	generatedPrimaryFields := stmt.generatedPrimaryFields()
-	if len(generatedPrimaryFields) != 1 {
+	generatedPrimaryColumns := stmt.generatedPrimaryColumns()
+	if len(generatedPrimaryColumns) != 1 {
 		return "", nil, fmt.Errorf("sqlite generated insert correlation requires one generated primary key")
 	}
 
@@ -414,7 +414,7 @@ func (b *sqliteBackend) renderGeneratedInsertRows(stmt saveRowsOp, indexes []int
 	}
 	b.writeByte(')')
 
-	generatedColumn := generatedPrimaryFields[0].column
+	generatedColumn := generatedPrimaryColumns[0]
 	b.writeString(", base (")
 	b.quoteIdentifier("$base")
 	b.writeString(") AS (SELECT ")
@@ -467,9 +467,9 @@ func (b *sqliteBackend) renderGeneratedInsertRows(stmt saveRowsOp, indexes []int
 	b.writeString(" FROM allocated ORDER BY ")
 	b.quoteIdentifier("$i")
 
-	if len(stmt.returning) > 0 {
+	if len(stmt.returningColumns()) > 0 {
 		b.writeString(" RETURNING ")
-		for i, col := range stmt.returning {
+		for i, col := range stmt.returningColumns() {
 			if i > 0 {
 				b.writeString(", ")
 			}
@@ -531,9 +531,9 @@ func (b *sqliteBackend) renderInsertRows(stmt saveRowsOp, rows []saveRow) (strin
 	}
 	b.writeString(" FROM new_rows")
 
-	if len(stmt.returning) > 0 {
+	if len(stmt.returningColumns()) > 0 {
 		b.writeString(" RETURNING ")
-		for i, col := range stmt.returning {
+		for i, col := range stmt.returningColumns() {
 			if i > 0 {
 				b.writeString(", ")
 			}
@@ -602,9 +602,9 @@ func (b *sqliteBackend) renderUpdateRows(stmt saveRowsOp, rows []saveRow) (strin
 		b.quoteIdentifier(col)
 	}
 
-	if len(stmt.returning) > 0 {
+	if len(stmt.returningColumns()) > 0 {
 		b.writeString(" RETURNING ")
-		for i, col := range stmt.returning {
+		for i, col := range stmt.returningColumns() {
 			if i > 0 {
 				b.writeString(", ")
 			}
@@ -680,17 +680,13 @@ func (b *sqliteBackend) renderDelete(stmt deleteRowsOp, chunk [][]any) (string, 
 	return b.sqlString(), b.argsBuffer
 }
 
-func (b *sqliteBackend) LoadByKeys(ctx context.Context, op loadRowsOp) (rows, error) {
+func (b *sqliteBackend) LoadRows(ctx context.Context, op loadRowsOp) (rows, error) {
 	if len(op.keys) == 0 {
 		return &emptyRows{}, nil
 	}
 
 	query, args := b.renderSelect(op, rowsFromKeys(op.keys))
 	return b.queryContext(ctx, query, args...)
-}
-
-func (b *sqliteBackend) LoadByParentKeys(ctx context.Context, op loadRowsOp) (rows, error) {
-	return b.LoadByKeys(ctx, op)
 }
 
 func (b *sqliteBackend) SelectExistingKeys(ctx context.Context, op keyScanOp) ([]Key, error) {
@@ -713,7 +709,7 @@ func (b *sqliteBackend) InsertRows(ctx context.Context, op saveRowsOp, rows []pl
 	}
 
 	indexes, saveRows := splitPlannedRows(rows)
-	if len(op.generatedPrimaryFields()) > 0 {
+	if len(op.generatedPrimaryColumns()) > 0 {
 		return b.insertGeneratedRows(ctx, op, indexes, saveRows)
 	}
 
@@ -754,7 +750,7 @@ func (b *sqliteBackend) insertGeneratedRows(ctx context.Context, op saveRowsOp, 
 	}
 	defer func() { _ = rowSet.Close() }()
 
-	valueRows, err := scanValueRows(rowSet, len(op.returning))
+	valueRows, err := scanValueRows(rowSet, len(op.returningColumns()))
 	if err != nil {
 		return nil, err
 	}
