@@ -18,8 +18,8 @@ graph TD
   mapping_go["mapping.go\nentity execution plan, key extraction"]
 
   persistence_go["persistence.go\ngraph save/load/delete orchestration"]
-  row_projection_go["row_projection.go\nsave row projection helpers"]
-  row_scan_go["row_scan.go\nrow scan/correlation helpers"]
+  save_rows_go["save_rows.go\nsave execution helpers"]
+  row_scan_go["row_scan.go\nraw row/value helpers"]
   sql_go["sql.go\nSQL AST helpers"]
   errors_go["errors.go\nsemantic errors"]
   key_go["key.go\nKey values"]
@@ -54,7 +54,7 @@ graph TD
   persistence_go --> backend_go
   persistence_go --> registry_go
   persistence_go --> mapping_go
-  persistence_go --> row_projection_go
+  persistence_go --> save_rows_go
   persistence_go --> row_scan_go
   persistence_go --> errors_go
   persistence_go --> key_go
@@ -62,22 +62,22 @@ graph TD
   backend_go --> sql_go
   backend_go --> key_go
 
-  row_projection_go --> backend_go
-  row_projection_go --> key_go
+  save_rows_go --> backend_go
+  save_rows_go --> row_scan_go
+  save_rows_go --> key_go
 
   row_scan_go --> backend_go
-  row_scan_go --> row_projection_go
   row_scan_go --> key_go
 
   postgres_go --> backend_go
-  postgres_go --> row_projection_go
+  postgres_go --> save_rows_go
   postgres_go --> row_scan_go
   postgres_go --> sql_go
   postgres_go --> errors_go
   postgres_go --> key_go
 
   sqlite_go --> backend_go
-  sqlite_go --> row_projection_go
+  sqlite_go --> save_rows_go
   sqlite_go --> row_scan_go
   sqlite_go --> sql_go
   sqlite_go --> errors_go
@@ -97,7 +97,9 @@ graph TD
 | `extract.go` standalone file is gone | OK | Key extraction is part of `mapping.go`, adjacent to mapping metadata. |
 | `mapping.go` no longer depends on persistence helpers | OK | `uniqueFieldNames` moved into mapping code. |
 | Backend operation DTOs do not carry entity field or relation plans | OK | Entity-facing `saveLayout` lives in `mapping.go`; relation diff helpers live in `persistence.go`. |
-| `backend.go` contains contracts, not execution helpers | OK | Row projection and row scan helpers live outside `backend.go`. |
+| `backend.go` contains contracts, not execution helpers | OK | Save execution and row scan helpers live outside `backend.go`. |
+| Dialects do not recompute planned row keys | OK | `plannedRow` carries the planner-computed key used for returned-row correlation. |
+| Persistence owns save semantic count checks | OK | Insert/update returned-row count checks live in `persistence.go`, not concrete dialects. |
 
 ## Current File Roles
 
@@ -108,8 +110,8 @@ graph TD
 | `key.go` | Driver contract / basic types | Comparable key representation. |
 | `errors.go` | Driver contract / basic types | Public semantic error sentinels. |
 | `sql.go` | Driver contract / basic types | Query SQL node model and parser shared by query and dialect renderers. |
-| `row_projection.go` | Backend support helper | Save row projection helpers used by persistence and dialect renderers. |
-| `row_scan.go` | Backend support helper | Empty rows, shared row scan, normalization, and returned-row correlation helpers. |
+| `save_rows.go` | Backend support helper | Save execution helpers: split planned rows, project insert values, correlate returned rows by key. |
+| `row_scan.go` | Backend support helper | Empty rows, raw row scan, normalization, and DB value coercion helpers. |
 | `compile.go` | Mapping | Public mapping registration, struct tag analysis, validation, and private mapping construction subroutines. |
 | `mapping.go` | Mapping | Compiled entity execution plans, save layout, child metadata, key extraction, and reflect accessors. |
 | `registry.go` | Mapping | Mapping lookup abstraction shared by Mapper and persistence. |
@@ -129,7 +131,8 @@ graph TD
 - `persistence_op.go`: renamed and merged into `persistence.go`.
 - `save_graph.go`: merged into `persistence.go`.
 - `extract.go`: merged into `mapping.go`.
-- `operations.go`: backend operation DTOs moved into `backend.go`; projection helpers moved into `row_projection.go` and scan helpers into `row_scan.go`.
+- `operations.go`: backend operation DTOs moved into `backend.go`; save execution helpers moved into `save_rows.go` and raw scan helpers into `row_scan.go`.
+- `row_projection.go`: replaced by `save_rows.go` after planner-owned keys made the helper responsibility narrower.
 
 ## Remaining Tensions
 

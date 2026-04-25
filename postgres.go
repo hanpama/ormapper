@@ -813,12 +813,9 @@ func (b *postgreSQLBackend) InsertRows(ctx context.Context, op saveRowsOp, rows 
 	}
 	defer func() { _ = rowSet.Close() }()
 
-	saved, err := scanKeyedSavedRows(op, indexes, saveRows, rowSet)
+	saved, err := scanKeyedSavedRows(op, rows, rowSet)
 	if err != nil {
 		return nil, err
-	}
-	if len(saved) != len(rows) {
-		return nil, fmt.Errorf("%w: expected %d inserted rows, got %d", ErrConsistency, len(rows), len(saved))
 	}
 	return saved, nil
 }
@@ -838,12 +835,34 @@ func (b *postgreSQLBackend) insertGeneratedRows(ctx context.Context, op saveRows
 	}
 	defer func() { _ = rowSet.Close() }()
 
-	saved, err := scanIndexedSavedRows(rowSet, len(op.layout.returningColumns))
+	saved, err := b.scanIndexedSavedRows(rowSet, len(op.layout.returningColumns))
 	if err != nil {
 		return nil, err
 	}
-	if len(saved) != len(rows) {
-		return nil, fmt.Errorf("expected %d returned rows, got %d", len(rows), len(saved))
+	return saved, nil
+}
+
+func (b *postgreSQLBackend) scanIndexedSavedRows(rowSet rows, returningColumns int) ([]savedRow, error) {
+	dest := make([]any, returningColumns+1)
+	saved := make([]savedRow, 0)
+	for rowSet.Next() {
+		var indexValue any
+		values := make([]any, returningColumns)
+		dest[0] = &indexValue
+		for i := range values {
+			dest[i+1] = &values[i]
+		}
+		if err := rowSet.Scan(dest...); err != nil {
+			return nil, err
+		}
+		index, err := intFromDB(normalizeScannedValue(indexValue))
+		if err != nil {
+			return nil, err
+		}
+		for i, value := range values {
+			values[i] = normalizeScannedValue(value)
+		}
+		saved = append(saved, savedRow{index: index, values: values})
 	}
 	return saved, nil
 }
@@ -853,7 +872,7 @@ func (b *postgreSQLBackend) UpdateRows(ctx context.Context, op saveRowsOp, rows 
 		return nil, nil
 	}
 
-	indexes, saveRows := splitPlannedRows(rows)
+	_, saveRows := splitPlannedRows(rows)
 	query, args := b.renderUpdateRows(op, saveRows)
 	rowSet, err := b.queryContext(ctx, query, args...)
 	if err != nil {
@@ -861,12 +880,9 @@ func (b *postgreSQLBackend) UpdateRows(ctx context.Context, op saveRowsOp, rows 
 	}
 	defer func() { _ = rowSet.Close() }()
 
-	saved, err := scanKeyedSavedRows(op, indexes, saveRows, rowSet)
+	saved, err := scanKeyedSavedRows(op, rows, rowSet)
 	if err != nil {
 		return nil, err
-	}
-	if len(saved) != len(rows) {
-		return nil, fmt.Errorf("%w: expected %d updated rows, got %d", ErrStaleEntity, len(rows), len(saved))
 	}
 	return saved, nil
 }

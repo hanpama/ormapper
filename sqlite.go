@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"sort"
 	"strconv"
 )
 
@@ -720,12 +721,9 @@ func (b *sqliteBackend) InsertRows(ctx context.Context, op saveRowsOp, rows []pl
 	}
 	defer func() { _ = rowSet.Close() }()
 
-	saved, err := scanKeyedSavedRows(op, indexes, saveRows, rowSet)
+	saved, err := scanKeyedSavedRows(op, rows, rowSet)
 	if err != nil {
 		return nil, err
-	}
-	if len(saved) != len(rows) {
-		return nil, fmt.Errorf("%w: expected %d inserted rows, got %d", ErrConsistency, len(rows), len(saved))
 	}
 	return saved, nil
 }
@@ -750,9 +748,50 @@ func (b *sqliteBackend) insertGeneratedRows(ctx context.Context, op saveRowsOp, 
 	}
 	defer func() { _ = rowSet.Close() }()
 
-	saved, err := scanRowsBySingleIntKeyOrder(op, indexes, rowSet)
+	saved, err := b.scanRowsBySingleIntKeyOrder(op, indexes, rowSet)
 	if err != nil {
 		return nil, err
+	}
+	return saved, nil
+}
+
+func (b *sqliteBackend) scanRowsBySingleIntKeyOrder(op saveRowsOp, indexes []int, rowSet rows) ([]savedRow, error) {
+	if len(op.layout.primaryColumns) != 1 {
+		return nil, fmt.Errorf("ordered generated insert correlation requires one primary key")
+	}
+
+	type keyedRow struct {
+		key    int64
+		values []any
+	}
+	returningColumnCount := len(op.layout.returningColumns)
+	dest := make([]any, returningColumnCount)
+	keyed := make([]keyedRow, 0, len(indexes))
+	for rowSet.Next() {
+		values := make([]any, returningColumnCount)
+		if err := scanRowValues(rowSet, values, dest); err != nil {
+			return nil, err
+		}
+		key := primaryKeyFromReturnedValues(op.layout, values)
+		value, err := int64FromDB(key.At(0))
+		if err != nil {
+			return nil, err
+		}
+		keyed = append(keyed, keyedRow{key: value, values: values})
+	}
+	sort.Slice(keyed, func(i, j int) bool {
+		return keyed[i].key < keyed[j].key
+	})
+
+	sortedIndexes := append([]int(nil), indexes...)
+	sort.Ints(sortedIndexes)
+	if len(sortedIndexes) != len(keyed) {
+		return nil, fmt.Errorf("expected %d returned rows, got %d", len(sortedIndexes), len(keyed))
+	}
+
+	saved := make([]savedRow, len(keyed))
+	for i, row := range keyed {
+		saved[i] = savedRow{index: sortedIndexes[i], values: row.values}
 	}
 	return saved, nil
 }
@@ -762,7 +801,7 @@ func (b *sqliteBackend) UpdateRows(ctx context.Context, op saveRowsOp, rows []pl
 		return nil, nil
 	}
 
-	indexes, saveRows := splitPlannedRows(rows)
+	_, saveRows := splitPlannedRows(rows)
 	query, args := b.renderUpdateRows(op, saveRows)
 	rowSet, err := b.queryContext(ctx, query, args...)
 	if err != nil {
@@ -770,12 +809,9 @@ func (b *sqliteBackend) UpdateRows(ctx context.Context, op saveRowsOp, rows []pl
 	}
 	defer func() { _ = rowSet.Close() }()
 
-	saved, err := scanKeyedSavedRows(op, indexes, saveRows, rowSet)
+	saved, err := scanKeyedSavedRows(op, rows, rowSet)
 	if err != nil {
 		return nil, err
-	}
-	if len(saved) != len(rows) {
-		return nil, fmt.Errorf("%w: expected %d updated rows, got %d", ErrStaleEntity, len(rows), len(saved))
 	}
 	return saved, nil
 }

@@ -65,6 +65,7 @@ type saveRow struct {
 
 type plannedRow struct {
 	index int
+	key   Key
 	row   saveRow
 }
 

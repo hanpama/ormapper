@@ -276,6 +276,10 @@ type backend interface {
 
 `SaveRows`라는 upsert-like primitive는 제거한다. insert와 update는 다른 semantic이므로 다른 primitive여야 한다.
 
+`plannedRow`는 공통 persistence planner가 계산한 primary key를 포함한다.
+Dialect는 이 key를 returned-row correlation에만 사용한다. Dialect가 key
+intent를 다시 계산하거나 insert/update/delete semantic을 판단하면 안 된다.
+
 ## 6. SQL Shape
 
 ### 6.1 Batch Existing Key Scan
@@ -580,9 +584,11 @@ persistence.go
 mapping.go / registry.go
   Compiled entity execution plans, key extraction, and lookup.
 
-row_projection.go / row_scan.go
-  Row/key projection helpers, empty rows, shared row scan, normalization, and correlation helpers.
-  These helpers interpret backend operation DTOs but are not themselves backend contracts.
+save_rows.go
+  Backend save execution support: split planned rows, project insert values, and correlate returned rows by planner-provided keys.
+
+row_scan.go
+  Empty rows plus raw row scan, normalization, and DB value coercion helpers.
 ```
 
 Important dependency rules:
