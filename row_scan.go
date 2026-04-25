@@ -6,6 +6,12 @@ import (
 	"sort"
 )
 
+type emptyRows struct{}
+
+func (e *emptyRows) Next() bool             { return false }
+func (e *emptyRows) Scan(dest ...any) error { return nil }
+func (e *emptyRows) Close() error           { return nil }
+
 func splitPlannedRows(rows []plannedRow) ([]int, []saveRow) {
 	indexes := make([]int, len(rows))
 	saveRows := make([]saveRow, len(rows))
@@ -19,7 +25,7 @@ func splitPlannedRows(rows []plannedRow) ([]int, []saveRow) {
 func scanKeyedSavedRows(op saveRowsOp, indexes []int, saveRows []saveRow, rowSet rows) ([]savedRow, error) {
 	inputByKey := make(map[Key]int, len(saveRows))
 	for i, row := range saveRows {
-		key := op.keyFromRow(row)
+		key := primaryKeyFromRow(op.layout, row)
 		if _, exists := inputByKey[key]; exists {
 			return nil, fmt.Errorf("duplicate save key %v", key)
 		}
@@ -34,7 +40,7 @@ func scanKeyedSavedRows(op saveRowsOp, indexes []int, saveRows []saveRow, rowSet
 		if err := scanRowValues(rowSet, values, dest); err != nil {
 			return nil, err
 		}
-		key := op.keyFromReturnedValues(values)
+		key := primaryKeyFromReturnedValues(op.layout, values)
 		index, ok := inputByKey[key]
 		if !ok {
 			return nil, fmt.Errorf("returned key %v does not match any input row", key)
@@ -86,7 +92,7 @@ func scanRowsBySingleIntKeyOrder(op saveRowsOp, indexes []int, rowSet rows) ([]s
 		if err := scanRowValues(rowSet, values, dest); err != nil {
 			return nil, err
 		}
-		key := op.keyFromReturnedValues(values)
+		key := primaryKeyFromReturnedValues(op.layout, values)
 		value, err := int64FromDB(key.At(0))
 		if err != nil {
 			return nil, err
@@ -168,7 +174,7 @@ func scanTypedKeys(rowSet rows, keyTypes []reflect.Type) ([]Key, error) {
 			return nil, err
 		}
 		for i, value := range values {
-			values[i] = coerceValue(normalizeScannedValue(value), keyTypes[i])
+			values[i] = coerceScannedValue(normalizeScannedValue(value), keyTypes[i])
 		}
 		keys = append(keys, NewKey(values...))
 	}
@@ -196,4 +202,33 @@ func normalizeScannedValue(value any) any {
 	default:
 		return value
 	}
+}
+
+func primaryKeyFromReturnedValues(layout *saveRowsLayout, values []any) Key {
+	return coercedKeyFromIndexes(values, layout.primaryReturningIndexes, layout.primaryTypes)
+}
+
+func coercedKeyFromIndexes(values []any, indexes []int, types []reflect.Type) Key {
+	var keyValues [9]any
+	if len(indexes) > len(keyValues) {
+		panic("ormapper: Key supports up to 9 column values")
+	}
+	for i, idx := range indexes {
+		keyValues[i] = coerceScannedValue(values[idx], types[i])
+	}
+	return newKeyFromValues(keyValues[:len(indexes)])
+}
+
+func coerceScannedValue(value any, target reflect.Type) any {
+	if value == nil {
+		return nil
+	}
+	v := reflect.ValueOf(value)
+	if v.Type().AssignableTo(target) {
+		return value
+	}
+	if v.Type().ConvertibleTo(target) {
+		return v.Convert(target).Interface()
+	}
+	return value
 }

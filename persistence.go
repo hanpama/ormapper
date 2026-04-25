@@ -236,7 +236,7 @@ func existingParentKeys(parents []saveResult) []Key {
 func keysFromPlannedRows(op saveRowsOp, rows []plannedRow) []Key {
 	keys := make([]Key, len(rows))
 	for i, row := range rows {
-		keys[i] = op.keyFromRow(row.row)
+		keys[i] = primaryKeyFromRow(op.layout, row.row)
 	}
 	return keys
 }
@@ -400,10 +400,10 @@ func (u *persistence) loadChildRelationSnapshot(ctx context.Context, em *entityM
 			return nil, err
 		}
 		for i, value := range parentValues {
-			parentValues[i] = coerceValue(normalizeScannedValue(value), parentTypes[i])
+			parentValues[i] = coerceScannedValue(normalizeScannedValue(value), parentTypes[i])
 		}
 		for i, value := range childValues {
-			childValues[i] = coerceValue(normalizeScannedValue(value), childTypes[i])
+			childValues[i] = coerceScannedValue(normalizeScannedValue(value), childTypes[i])
 		}
 		snapshot.add(NewKey(parentValues...), NewKey(childValues...))
 	}
@@ -436,7 +436,7 @@ func (u *persistence) saveRows(ctx context.Context, em *entityMapping, entities 
 			return nil, err
 		}
 		if intent != saveRowGeneratedInsert {
-			key := saveOp.keyFromRow(planned.row)
+			key := primaryKeyFromRow(saveOp.layout, planned.row)
 			if previous, ok := submittedKeys[key]; ok {
 				return nil, fmt.Errorf("%w: duplicate submitted key %v at entity indexes %d and %d", ErrConsistency, key, previous, i)
 			}
@@ -451,7 +451,7 @@ func (u *persistence) saveRows(ctx context.Context, em *entityMapping, entities 
 				continue
 			}
 			parentKey := em.extractParentalKey(entity)
-			childKey := saveOp.keyFromRow(planned.row)
+			childKey := primaryKeyFromRow(saveOp.layout, planned.row)
 			if !relation.contains(parentKey, childKey) {
 				return nil, fmt.Errorf("%w: generated key %v does not exist in parent relation for %s", ErrStaleEntity, childKey, em.entityType)
 			}
@@ -462,7 +462,7 @@ func (u *persistence) saveRows(ctx context.Context, em *entityMapping, entities 
 				continue
 			}
 			parentKey := em.extractParentalKey(entity)
-			childKey := saveOp.keyFromRow(planned.row)
+			childKey := primaryKeyFromRow(saveOp.layout, planned.row)
 			if relation.contains(parentKey, childKey) {
 				updateRows = append(updateRows, planned)
 			} else {
@@ -483,7 +483,7 @@ func (u *persistence) saveRows(ctx context.Context, em *entityMapping, entities 
 		}
 		existing := keySet(existingKeys)
 		for _, row := range manualCandidates {
-			if _, ok := existing[saveOp.keyFromRow(row.row)]; ok {
+			if _, ok := existing[primaryKeyFromRow(saveOp.layout, row.row)]; ok {
 				updateRows = append(updateRows, row)
 			} else {
 				insertRows = append(insertRows, row)
@@ -498,8 +498,9 @@ func (u *persistence) saveRows(ctx context.Context, em *entityMapping, entities 
 		}
 		existing := keySet(existingKeys)
 		for _, row := range generatedUpdates {
-			if _, ok := existing[saveOp.keyFromRow(row.row)]; !ok {
-				return nil, fmt.Errorf("%w: generated key %v does not exist in %s", ErrStaleEntity, saveOp.keyFromRow(row.row), em.entityType)
+			key := primaryKeyFromRow(saveOp.layout, row.row)
+			if _, ok := existing[key]; !ok {
+				return nil, fmt.Errorf("%w: generated key %v does not exist in %s", ErrStaleEntity, key, em.entityType)
 			}
 			updateRows = append(updateRows, row)
 		}

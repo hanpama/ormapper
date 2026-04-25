@@ -439,7 +439,7 @@ func (b *postgreSQLBackend) renderGeneratedInsertRows(stmt saveRowsOp, indexes [
 		}
 		b.writeByte('(')
 		b.writeString(strconv.Itoa(indexes[idx]))
-		values := stmt.insertValuesForRow(row)
+		values := insertValuesFromRow(stmt.layout, row)
 		for j, val := range values {
 			b.writeString(", ")
 			b.paramIndex++
@@ -552,7 +552,7 @@ func (b *postgreSQLBackend) renderInsertRows(stmt saveRowsOp, rows []saveRow) (s
 			b.writeString(", ")
 		}
 		b.writeByte('(')
-		values := stmt.insertValuesForRow(row)
+		values := insertValuesFromRow(stmt.layout, row)
 		for j, val := range values {
 			if j > 0 {
 				b.writeString(", ")

@@ -403,7 +403,7 @@ func (b *sqliteBackend) renderGeneratedInsertRows(stmt saveRowsOp, indexes []int
 		}
 		b.writeByte('(')
 		b.writeString(strconv.Itoa(indexes[idx]))
-		values := stmt.insertValuesForRow(row)
+		values := insertValuesFromRow(stmt.layout, row)
 		for _, val := range values {
 			b.writeString(", ")
 			b.writeByte('?')
@@ -500,7 +500,7 @@ func (b *sqliteBackend) renderInsertRows(stmt saveRowsOp, rows []saveRow) (strin
 			b.writeString(", ")
 		}
 		b.writeByte('(')
-		values := stmt.insertValuesForRow(row)
+		values := insertValuesFromRow(stmt.layout, row)
 		for j, val := range values {
 			if j > 0 {
 				b.writeString(", ")

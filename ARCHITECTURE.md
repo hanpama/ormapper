@@ -564,8 +564,8 @@ package.go
   This is the only central file that mentions both PostgreSQL and SQLite.
 
 backend.go
-  DBTX, Dialect, rows, emptyRows, and backend interface.
-  This file must not depend on concrete engines.
+  DBTX, Dialect, rows, backend interface, and backend operation DTOs.
+  This file must not depend on concrete engines and must not contain execution helpers.
 
 postgres.go / sqlite.go
   Concrete dialect type, backend construction, SQL rendering, execution.
@@ -580,15 +580,16 @@ persistence.go
 mapping.go / registry.go
   Compiled entity execution plans, key extraction, and lookup.
 
-operations.go / row_scan.go
-  Backend operation DTOs, row/key projection helpers, and shared row scan/correlation helpers.
-  Backend ops must not expose entity field or relation plans.
+row_projection.go / row_scan.go
+  Row/key projection helpers, empty rows, shared row scan, normalization, and correlation helpers.
+  These helpers interpret backend operation DTOs but are not themselves backend contracts.
 ```
 
 Important dependency rules:
 
 - Compile subroutines that only serve `Compile` stay in `compile.go` below the public compile API.
 - `backend.go` never imports or references `postgres.go` or `sqlite.go`.
+- `backend.go` declares contract types only; execution helpers stay outside it.
 - `persistence.go` never depends on `Mapper`.
 - `mapping.go` never depends on persistence helpers.
 - backend operation plans must not carry entity field or child relation metadata.
