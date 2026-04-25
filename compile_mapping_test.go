@@ -125,11 +125,11 @@ func TestCompileBuildsMappings(t *testing.T) {
 	if !reflect.DeepEqual(parent.primaryKey, []string{"ID"}) {
 		t.Fatalf("expected default ID primary key, got %#v", parent.primaryKey)
 	}
-	if !reflect.DeepEqual(parent.insertable, []string{"Name", "WriteOnce"}) {
-		t.Fatalf("unexpected insertable fields: %#v", parent.insertable)
+	if got := fieldNames(parent.insertablePlan); !reflect.DeepEqual(got, []string{"Name", "WriteOnce"}) {
+		t.Fatalf("unexpected insertable fields: %#v", got)
 	}
-	if !reflect.DeepEqual(parent.updatable, []string{"Name"}) {
-		t.Fatalf("unexpected updatable fields: %#v", parent.updatable)
+	if got := fieldNames(parent.updatablePlan); !reflect.DeepEqual(got, []string{"Name"}) {
+		t.Fatalf("unexpected updatable fields: %#v", got)
 	}
 
 	if child := parent.childMap["Children"]; child == nil || child.singular || child.target != reflect.TypeOf(mappingTestChild{}) {
@@ -148,7 +148,7 @@ func TestCompileBuildsMappings(t *testing.T) {
 	if !reflect.DeepEqual(composite.primaryKey, []string{"Key1", "Key2"}) {
 		t.Fatalf("expected composite primary key, got %#v", composite.primaryKey)
 	}
-	key := composite.extractKey(&mappingTestComposite{Key1: 7, Key2: "x"}, composite.primaryKey)
+	key := composite.extractPrimaryKey(&mappingTestComposite{Key1: 7, Key2: "x"})
 	if key != NewKey(7, "x") {
 		t.Fatalf("unexpected composite key: %#v", key)
 	}
@@ -188,4 +188,12 @@ func TestCompileInvalidMappings(t *testing.T) {
 	if _, err := Compile(SQLite, Map(&invalidGeneratedComposite{})); err == nil {
 		t.Fatal("expected generated composite primary key error")
 	}
+}
+
+func fieldNames(plan fieldPlan) []string {
+	names := make([]string, len(plan.fields))
+	for i, f := range plan.fields {
+		names[i] = f.name
+	}
+	return names
 }

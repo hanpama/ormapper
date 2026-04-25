@@ -22,11 +22,11 @@ func newPersistence(registry mappingRegistry, backend backend) *persistence {
 // --- Load ---
 
 func (u *persistence) getByKeys(ctx context.Context, em *entityMapping, ids []Key) ([]any, error) {
-	return u.loadEntities(ctx, em, em.primaryKey, em.primaryColumns, ids)
+	return u.loadEntities(ctx, em, em.primaryKey, em.primaryPlan.columns, ids)
 }
 
 func (u *persistence) getByParentKeys(ctx context.Context, em *entityMapping, parentKeys []Key) ([]any, error) {
-	return u.loadEntities(ctx, em, em.parentalKey, em.parentalColumns, parentKeys)
+	return u.loadEntities(ctx, em, em.parentalKey, em.parentalPlan.columns, parentKeys)
 }
 
 func (u *persistence) loadEntities(ctx context.Context, em *entityMapping, keyNames []string, keyColumns []string, keys []Key) ([]any, error) {
@@ -43,7 +43,7 @@ func (u *persistence) loadEntities(ctx context.Context, em *entityMapping, keyNa
 	rowSet, err := u.backend.LoadRows(ctx, loadRowsOp{
 		schema:        em.schema,
 		table:         em.table,
-		selectColumns: em.allColumns,
+		selectColumns: em.allPlan.columns,
 		keyColumns:    keyColumns,
 		keys:          keys,
 	})
@@ -374,15 +374,15 @@ func (u *persistence) loadRelationState(ctx context.Context, childMapping *entit
 		return state, nil
 	}
 
-	selectColumns := make([]string, 0, len(childMapping.parentalColumns)+len(childMapping.primaryColumns))
-	selectColumns = append(selectColumns, childMapping.parentalColumns...)
-	selectColumns = append(selectColumns, childMapping.primaryColumns...)
+	selectColumns := make([]string, 0, len(childMapping.parentalPlan.columns)+len(childMapping.primaryPlan.columns))
+	selectColumns = append(selectColumns, childMapping.parentalPlan.columns...)
+	selectColumns = append(selectColumns, childMapping.primaryPlan.columns...)
 
 	rowSet, err := u.backend.LoadRows(ctx, loadRowsOp{
 		schema:        childMapping.schema,
 		table:         childMapping.table,
 		selectColumns: selectColumns,
-		keyColumns:    childMapping.parentalColumns,
+		keyColumns:    childMapping.parentalPlan.columns,
 		keys:          parentKeys,
 	})
 	if err != nil {
@@ -487,7 +487,7 @@ func (u *persistence) selectExistingKeys(ctx context.Context, em *entityMapping,
 	return u.backend.SelectExistingKeys(ctx, keyScanOp{
 		schema:     em.schema,
 		table:      em.table,
-		keyColumns: em.primaryColumns,
+		keyColumns: em.primaryPlan.columns,
 		keyTypes:   em.primaryPlan.types,
 		keys:       keys,
 	})
@@ -530,7 +530,7 @@ func (u *persistence) deleteByKeys(ctx context.Context, em *entityMapping, keys 
 	return u.backend.DeleteRowsByKeys(ctx, deleteRowsOp{
 		schema:     em.schema,
 		table:      em.table,
-		keyColumns: em.primaryColumns,
+		keyColumns: em.primaryPlan.columns,
 		keys:       keys,
 	})
 }
@@ -543,8 +543,8 @@ func (u *persistence) loadKeysByParentKeys(ctx context.Context, em *entityMappin
 	rowSet, err := u.backend.LoadRows(ctx, loadRowsOp{
 		schema:        em.schema,
 		table:         em.table,
-		selectColumns: em.primaryColumns,
-		keyColumns:    em.parentalColumns,
+		selectColumns: em.primaryPlan.columns,
+		keyColumns:    em.parentalPlan.columns,
 		keys:          parentKeys,
 	})
 	if err != nil {

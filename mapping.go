@@ -150,15 +150,6 @@ type entityMapping struct {
 	allFields   []string
 	primaryKey  []string
 	parentalKey []string
-	insertable  []string
-	updatable   []string
-
-	// Pre-computed column lists (private, immutable after initialization)
-	allColumns        []string
-	primaryColumns    []string
-	parentalColumns   []string
-	insertableColumns []string
-	updatableColumns  []string
 
 	allPlan        fieldPlan
 	primaryPlan    fieldPlan
@@ -183,33 +174,21 @@ func newEntityMapping(
 	updatable []string,
 ) *entityMapping {
 	em := &entityMapping{
-		entityType:        entityType,
-		schema:            schema,
-		table:             table,
-		fieldMap:          fieldMap,
-		childMap:          childMap,
-		childFields:       childFields,
-		allFields:         allFields,
-		primaryKey:        primaryKey,
-		parentalKey:       parentalKey,
-		insertable:        insertable,
-		updatable:         updatable,
-		allColumns:        make([]string, 0, len(allFields)),
-		primaryColumns:    make([]string, 0, len(primaryKey)),
-		parentalColumns:   make([]string, 0, len(parentalKey)),
-		insertableColumns: make([]string, 0, len(insertable)),
-		updatableColumns:  make([]string, 0, len(updatable)),
+		entityType:  entityType,
+		schema:      schema,
+		table:       table,
+		fieldMap:    fieldMap,
+		childMap:    childMap,
+		childFields: childFields,
+		allFields:   allFields,
+		primaryKey:  primaryKey,
+		parentalKey: parentalKey,
 	}
 	em.allPlan = newFieldPlan(fieldMap, allFields)
 	em.primaryPlan = newFieldPlan(fieldMap, primaryKey)
 	em.parentalPlan = newFieldPlan(fieldMap, parentalKey)
 	em.insertablePlan = newFieldPlan(fieldMap, insertable)
 	em.updatablePlan = newFieldPlan(fieldMap, updatable)
-	em.allColumns = em.allPlan.columns
-	em.primaryColumns = em.primaryPlan.columns
-	em.parentalColumns = em.parentalPlan.columns
-	em.insertableColumns = em.insertablePlan.columns
-	em.updatableColumns = em.updatablePlan.columns
 	em.saveLayout = newSaveLayout(fieldMap, allFields, primaryKey, insertable, updatable)
 
 	return em
@@ -296,24 +275,12 @@ func newSaveLayout(
 	return layout
 }
 
-func (em *entityMapping) extractKey(entity any, fieldNames []string) Key {
-	return extractKeyFromFields(entity, em.fieldsByName(fieldNames))
-}
-
 func (em *entityMapping) extractPrimaryKey(entity any) Key {
 	return extractKeyFromFields(entity, em.primaryPlan.fields)
 }
 
 func (em *entityMapping) extractParentalKey(entity any) Key {
 	return extractKeyFromFields(entity, em.parentalPlan.fields)
-}
-
-func (em *entityMapping) fieldsByName(fieldNames []string) []*field {
-	fields := make([]*field, len(fieldNames))
-	for i, name := range fieldNames {
-		fields[i] = em.fieldMap[name]
-	}
-	return fields
 }
 
 func extractKeyFromFields(entity any, fields []*field) Key {
