@@ -805,10 +805,6 @@ func (b *postgreSQLBackend) renderDelete(stmt deleteRowsOp, keys []Key) (string,
 }
 
 func (b *postgreSQLBackend) LoadRows(ctx context.Context, op loadRowsOp) (rows, error) {
-	if len(op.keys) == 0 {
-		return &emptyRows{}, nil
-	}
-
 	query, args := b.renderSelect(op, op.keys)
 	return b.queryContext(ctx, query, args...)
 }
@@ -828,9 +824,6 @@ func (b *postgreSQLBackend) SelectExistingKeys(ctx context.Context, op keyScanOp
 }
 
 func (b *postgreSQLBackend) InsertRows(ctx context.Context, op insertOp) (rows, error) {
-	if len(op.rows) == 0 {
-		return &emptyRows{}, nil
-	}
 	var query string
 	var args []any
 	if len(op.generatedPrimaryColumns) > 0 {
@@ -842,9 +835,6 @@ func (b *postgreSQLBackend) InsertRows(ctx context.Context, op insertOp) (rows, 
 }
 
 func (b *postgreSQLBackend) UpdateRows(ctx context.Context, op updateOp) (rows, error) {
-	if len(op.rows) == 0 {
-		return &emptyRows{}, nil
-	}
 	query, args := b.renderUpdateRows(op)
 	return b.queryContext(ctx, query, args...)
 }
