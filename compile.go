@@ -110,10 +110,27 @@ func MustCompile(dialect Dialect, mappings ...Mapping) *Mapper {
 	return mapper
 }
 
+// WithConverter registers a bidirectional type converter for a field.
+// F is the Go field type, C is the DB column type.
+func WithConverter[F, C any](fieldName string, toDB func(F) (C, error), fromDB func(C) (F, error)) MapOption {
+	return MapOption{
+		apply: func(meta *entityMetadata) {
+			if meta.Converters == nil {
+				meta.Converters = make(map[string]*fieldConverter)
+			}
+			meta.Converters[fieldName] = &fieldConverter{
+				toDB:   func(v any) (any, error) { return toDB(v.(F)) },
+				fromDB: func(v any) (any, error) { return fromDB(v.(C)) },
+			}
+		},
+	}
+}
+
 type entityMetadata struct {
-	Schema string
-	Table  string
-	Fields []fieldMetadata
+	Schema     string
+	Table      string
+	Fields     []fieldMetadata
+	Converters map[string]*fieldConverter
 }
 
 type fieldMetadata struct {
@@ -329,14 +346,15 @@ func buildSingleMapping(
 			columnName = metadata.defaultColumn
 		}
 
-		field := field{
+		f := field{
 			name:       metadata.name,
 			column:     columnName,
 			typ:        metadata.typ,
 			fieldIndex: metadata.fieldIndex,
+			converter:  entityMeta.Converters[fieldName],
 		}
 
-		fieldMap[fieldName] = &field
+		fieldMap[fieldName] = &f
 
 		isPrimaryKey := metadata.primaryTag
 		isParentalKey := metadata.parentalTag

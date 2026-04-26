@@ -22,6 +22,12 @@ func (r *bufferedRows) Next() bool {
 func (r *bufferedRows) Scan(dest ...any) error {
 	row := r.data[r.cursor-1]
 	for i, d := range dest {
+		if scanner, ok := d.(interface{ Scan(any) error }); ok {
+			if err := scanner.Scan(row[i]); err != nil {
+				return err
+			}
+			continue
+		}
 		dv := reflect.ValueOf(d).Elem()
 		val := row[i]
 		if val == nil {

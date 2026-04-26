@@ -16,19 +16,53 @@ func (r mappingRegistry) get(entityType reflect.Type) (*entityMapping, error) {
 	return mapping, nil
 }
 
+type fieldConverter struct {
+	toDB   func(any) (any, error)
+	fromDB func(any) (any, error)
+}
+
+type convertingScanner struct {
+	target reflect.Value
+	fromDB func(any) (any, error)
+}
+
+func (c *convertingScanner) Scan(src any) error {
+	converted, err := c.fromDB(src)
+	if err != nil {
+		return err
+	}
+	c.target.Set(reflect.ValueOf(converted))
+	return nil
+}
+
 type field struct {
 	name       string
 	column     string
 	typ        reflect.Type
-	fieldIndex int // Index of the field in the struct for direct reflect access
+	fieldIndex int
+	converter  *fieldConverter
 }
 
 func (f *field) ptrFrom(entity reflect.Value) any {
+	if f.converter != nil {
+		return &convertingScanner{
+			target: entity.Field(f.fieldIndex),
+			fromDB: f.converter.fromDB,
+		}
+	}
 	return entity.Field(f.fieldIndex).Addr().Interface()
 }
 
 func (f *field) valueFrom(entity reflect.Value) any {
 	return entity.Field(f.fieldIndex).Interface()
+}
+
+func (f *field) dbValueFrom(entity reflect.Value) (any, error) {
+	value := entity.Field(f.fieldIndex).Interface()
+	if f.converter != nil {
+		return f.converter.toDB(value)
+	}
+	return value, nil
 }
 
 func (f *field) setOn(entity reflect.Value, value any) {
@@ -163,12 +197,13 @@ type saveLayout struct {
 	keyFromReturning func([]any) Key
 }
 
-func (sl *saveLayout) projectEntity(entity any) ([]any, Key) {
+func (sl *saveLayout) projectEntity(entity any) ([]any, Key, error) {
 	entityValue := reflect.ValueOf(entity).Elem()
 	values := make([]any, len(sl.rowFields))
 	for j, field := range sl.rowFields {
 		values[j] = field.valueFrom(entityValue)
 	}
+
 	var keyValues [9]any
 	if len(sl.primaryIndexes) > len(keyValues) {
 		panic("ormapper: Key supports up to 9 column values")
@@ -176,7 +211,19 @@ func (sl *saveLayout) projectEntity(entity any) ([]any, Key) {
 	for j, idx := range sl.primaryIndexes {
 		keyValues[j] = values[idx]
 	}
-	return values, newKeyFromValues(keyValues[:len(sl.primaryIndexes)])
+	key := newKeyFromValues(keyValues[:len(sl.primaryIndexes)])
+
+	for j, field := range sl.rowFields {
+		if field.converter != nil {
+			val, err := field.converter.toDB(values[j])
+			if err != nil {
+				return nil, Key{}, fmt.Errorf("field %s: %w", field.name, err)
+			}
+			values[j] = val
+		}
+	}
+
+	return values, key, nil
 }
 
 func (sl *saveLayout) isInsert(values []any) (bool, error) {
@@ -214,7 +261,10 @@ func (sl *saveLayout) projectRows(entities []any) (inserts, candidates []planned
 	submittedKeys := make(map[Key]int, len(entities))
 
 	for i, entity := range entities {
-		values, key := sl.projectEntity(entity)
+		values, key, err := sl.projectEntity(entity)
+		if err != nil {
+			return nil, nil, err
+		}
 		planned := plannedRow{index: i, key: key, values: values}
 
 		insert, err := sl.isInsert(values)
