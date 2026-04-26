@@ -76,14 +76,10 @@ type updateOp struct {
 	returningColumns []string
 }
 
-type saveRow struct {
-	values []any
-}
-
 type plannedRow struct {
-	index int
-	key   Key
-	row   saveRow
+	index  int
+	key    Key
+	values []any
 }
 
 type deleteRowsOp struct {

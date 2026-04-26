@@ -153,30 +153,30 @@ type saveLayout struct {
 	keyFromReturning func([]any) Key
 }
 
-func (sl *saveLayout) projectEntity(entity any) (saveRow, Key) {
+func (sl *saveLayout) projectEntity(entity any) ([]any, Key) {
 	entityValue := reflect.ValueOf(entity).Elem()
-	row := make([]any, len(sl.rowFields))
+	values := make([]any, len(sl.rowFields))
 	for j, field := range sl.rowFields {
-		row[j] = field.valueFrom(entityValue)
+		values[j] = field.valueFrom(entityValue)
 	}
 	var keyValues [9]any
 	if len(sl.primaryIndexes) > len(keyValues) {
 		panic("ormapper: Key supports up to 9 column values")
 	}
 	for j, idx := range sl.primaryIndexes {
-		keyValues[j] = row[idx]
+		keyValues[j] = values[idx]
 	}
-	return saveRow{values: row}, newKeyFromValues(keyValues[:len(sl.primaryIndexes)])
+	return values, newKeyFromValues(keyValues[:len(sl.primaryIndexes)])
 }
 
-func (sl *saveLayout) isInsert(row saveRow) (bool, error) {
+func (sl *saveLayout) isInsert(values []any) (bool, error) {
 	generatedIndexes := sl.generatedPrimaryIndexes
 	if len(generatedIndexes) == 0 {
 		return false, nil
 	}
 	zeroCount := 0
 	for _, idx := range generatedIndexes {
-		value := row.values[idx]
+		value := values[idx]
 		if value == nil {
 			zeroCount++
 			continue

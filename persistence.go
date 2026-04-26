@@ -275,10 +275,10 @@ func projectSaveRows(em *entityMapping, entities []any) (inserts, candidates []p
 	submittedKeys := make(map[Key]int, len(entities))
 
 	for i, entity := range entities {
-		row, key := em.saveLayout.projectEntity(entity)
-		planned := plannedRow{index: i, key: key, row: row}
+		values, key := em.saveLayout.projectEntity(entity)
+		planned := plannedRow{index: i, key: key, values: values}
 
-		insert, err := em.saveLayout.isInsert(row)
+		insert, err := em.saveLayout.isInsert(values)
 		if err != nil {
 			return nil, nil, err
 		}

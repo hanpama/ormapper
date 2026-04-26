@@ -404,7 +404,7 @@ func (b *sqliteBackend) renderGeneratedInsertRows(op insertOp, useSQLiteSequence
 		}
 		b.writeByte('(')
 		b.writeString(strconv.Itoa(idx))
-		values := insertValuesFromRow(op.insertIndexes, planned.row)
+		values := insertValuesFromRow(op.insertIndexes, planned.values)
 		for _, val := range values {
 			b.writeString(", ")
 			b.writeByte('?')
@@ -501,7 +501,7 @@ func (b *sqliteBackend) renderInsertRows(op insertOp) (string, []any) {
 			b.writeString(", ")
 		}
 		b.writeByte('(')
-		values := insertValuesFromRow(op.insertIndexes, planned.row)
+		values := insertValuesFromRow(op.insertIndexes, planned.values)
 		for j, val := range values {
 			if j > 0 {
 				b.writeString(", ")
@@ -545,7 +545,7 @@ func (b *sqliteBackend) renderInsertRows(op insertOp) (string, []any) {
 	return b.sqlString(), b.argsBuffer
 }
 
-func (b *sqliteBackend) renderSingleUpdateRow(op updateOp, row saveRow) (string, []any) {
+func (b *sqliteBackend) renderSingleUpdateRow(op updateOp, values []any) (string, []any) {
 	b.resetSQLBuffer(256)
 	b.resetArgsBuffer(len(op.rowColumns))
 
@@ -569,7 +569,7 @@ func (b *sqliteBackend) renderSingleUpdateRow(op updateOp, row saveRow) (string,
 		}
 		b.quoteIdentifier(col)
 		b.writeString(" = ?")
-		b.argsBuffer = append(b.argsBuffer, row.values[colIndex[col]])
+		b.argsBuffer = append(b.argsBuffer, values[colIndex[col]])
 	}
 	b.writeString(" WHERE ")
 	for i, col := range op.primaryColumns {
@@ -578,7 +578,7 @@ func (b *sqliteBackend) renderSingleUpdateRow(op updateOp, row saveRow) (string,
 		}
 		b.quoteIdentifier(col)
 		b.writeString(" = ?")
-		b.argsBuffer = append(b.argsBuffer, row.values[colIndex[col]])
+		b.argsBuffer = append(b.argsBuffer, values[colIndex[col]])
 	}
 	if len(op.returningColumns) > 0 {
 		b.writeString(" RETURNING ")
@@ -776,7 +776,7 @@ func (b *sqliteBackend) UpdateRows(ctx context.Context, op updateOp) (rows, erro
 	result := make([][]any, 0, len(op.rows))
 
 	for _, planned := range op.rows {
-		query, args := b.renderSingleUpdateRow(op, planned.row)
+		query, args := b.renderSingleUpdateRow(op, planned.values)
 		rowSet, err := b.queryContext(ctx, query, args...)
 		if err != nil {
 			return nil, err
