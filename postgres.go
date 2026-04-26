@@ -349,75 +349,6 @@ func (b *postgreSQLBackend) renderSelect(stmt loadRowsOp, keys []Key) (string, [
 	return b.sqlString(), b.argsBuffer
 }
 
-func (b *postgreSQLBackend) renderSelectExistingKeys(stmt keyScanOp, keys []Key) (string, []any) {
-	b.paramIndex = 0
-	numKeyColumns := len(stmt.keyColumns)
-	b.resetArgsBuffer(len(keys) * numKeyColumns)
-	b.resetSQLBuffer(512)
-
-	b.writeString("WITH \"$k\" (")
-	for i, col := range stmt.keyColumns {
-		if i > 0 {
-			b.writeString(", ")
-		}
-		b.quoteIdentifier(col)
-	}
-	b.writeString(") AS (VALUES ")
-
-	for idx, key := range keys {
-		if idx > 0 {
-			b.writeString(", ")
-		}
-		b.writeByte('(')
-		for j := range stmt.keyColumns {
-			if j > 0 {
-				b.writeString(", ")
-			}
-			b.paramIndex++
-			if idx == 0 {
-				b.writeString("COALESCE((NULL::")
-				b.quoteTable(stmt.schema, stmt.table)
-				b.writeString(").")
-				b.quoteIdentifier(stmt.keyColumns[j])
-				b.writeString(", $")
-				b.writeString(strconv.Itoa(b.paramIndex))
-				b.writeByte(')')
-			} else {
-				b.writeByte('$')
-				b.writeString(strconv.Itoa(b.paramIndex))
-			}
-			b.argsBuffer = append(b.argsBuffer, key.At(j))
-		}
-		b.writeByte(')')
-	}
-	b.writeString(") ")
-
-	b.writeString("SELECT ")
-	for i, col := range stmt.keyColumns {
-		if i > 0 {
-			b.writeString(", ")
-		}
-		b.writeString("\"$k\".")
-		b.quoteIdentifier(col)
-	}
-
-	b.writeString(" FROM \"$k\" JOIN ")
-	b.quoteTable(stmt.schema, stmt.table)
-	b.writeString(" ON ")
-	for i, col := range stmt.keyColumns {
-		if i > 0 {
-			b.writeString(" AND ")
-		}
-		b.quoteIdentifier(stmt.table)
-		b.writeByte('.')
-		b.quoteIdentifier(col)
-		b.writeString(" = \"$k\".")
-		b.quoteIdentifier(col)
-	}
-
-	return b.sqlString(), b.argsBuffer
-}
-
 func (b *postgreSQLBackend) renderGeneratedInsertRows(op insertOp) (string, []any) {
 	b.paramIndex = 0
 	insertColumns := op.insertColumns
@@ -807,20 +738,6 @@ func (b *postgreSQLBackend) renderDelete(stmt deleteRowsOp, keys []Key) (string,
 func (b *postgreSQLBackend) LoadRows(ctx context.Context, op loadRowsOp) (rows, error) {
 	query, args := b.renderSelect(op, op.keys)
 	return b.queryContext(ctx, query, args...)
-}
-
-func (b *postgreSQLBackend) SelectExistingKeys(ctx context.Context, op keyScanOp) ([]Key, error) {
-	if len(op.keys) == 0 {
-		return nil, nil
-	}
-
-	query, args := b.renderSelectExistingKeys(op, op.keys)
-	rowSet, err := b.queryContext(ctx, query, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = rowSet.Close() }()
-	return scanTypedKeys(rowSet, op.keyTypes)
 }
 
 func (b *postgreSQLBackend) InsertRows(ctx context.Context, op insertOp) (rows, error) {

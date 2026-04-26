@@ -3,7 +3,6 @@ package ormapper
 import (
 	"context"
 	"database/sql"
-	"reflect"
 )
 
 // DBTX is the minimal database handle required by Mapper.
@@ -29,7 +28,6 @@ type rows interface {
 
 type backend interface {
 	LoadRows(ctx context.Context, op loadRowsOp) (rows, error)
-	SelectExistingKeys(ctx context.Context, op keyScanOp) ([]Key, error)
 	InsertRows(ctx context.Context, op insertOp) (rows, error)
 	UpdateRows(ctx context.Context, op updateOp) (rows, error)
 	DeleteRowsByKeys(ctx context.Context, op deleteRowsOp) error
@@ -43,14 +41,6 @@ type loadRowsOp struct {
 	selectColumns []string
 	keyColumns    []string
 	keys          []Key
-}
-
-type keyScanOp struct {
-	schema     string
-	table      string
-	keyColumns []string
-	keyTypes   []reflect.Type
-	keys       []Key
 }
 
 type insertOp struct {
