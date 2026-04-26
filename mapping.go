@@ -200,6 +200,32 @@ func (sl *saveLayout) hasGeneratedKey() bool {
 	return len(sl.generatedPrimaryIndexes) > 0
 }
 
+func (sl *saveLayout) projectRows(entities []any) (inserts, candidates []plannedRow, err error) {
+	submittedKeys := make(map[Key]int, len(entities))
+
+	for i, entity := range entities {
+		values, key := sl.projectEntity(entity)
+		planned := plannedRow{index: i, key: key, values: values}
+
+		insert, err := sl.isInsert(values)
+		if err != nil {
+			return nil, nil, err
+		}
+
+		if insert {
+			inserts = append(inserts, planned)
+		} else {
+			if previous, ok := submittedKeys[planned.key]; ok {
+				return nil, nil, fmt.Errorf("%w: duplicate submitted key %v at entity indexes %d and %d", ErrConsistency, planned.key, previous, i)
+			}
+			submittedKeys[planned.key] = i
+			candidates = append(candidates, planned)
+		}
+	}
+
+	return inserts, candidates, nil
+}
+
 func (sl *saveLayout) newInsertOp(schema, table string, rows []plannedRow) insertOp {
 	return insertOp{
 		schema:                            schema,

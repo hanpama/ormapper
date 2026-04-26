@@ -134,7 +134,7 @@ func (u *persistence) save(ctx context.Context, em *entityMapping, entities []an
 		return nil
 	}
 
-	inserts, candidates, err := projectSaveRows(em, entities)
+	inserts, candidates, err := em.saveLayout.projectRows(entities)
 	if err != nil {
 		return err
 	}
@@ -187,15 +187,47 @@ func (u *persistence) savePlannedLevel(ctx context.Context, em *entityMapping, e
 }
 
 func (u *persistence) saveChildRelation(ctx context.Context, parentMapping, childMapping *entityMapping, child *child, parentEntities []any, parentInserted []bool) error {
-	submitted, keepKeys, existingParentKeys := collectSubmittedChildren(parentMapping, parentEntities, parentInserted, child, childMapping)
+	// Collect submitted children and inject parental keys
+	childCount := 0
+	for _, entity := range parentEntities {
+		childCount += child.count(entity)
+	}
 
+	submitted := make([]any, 0, childCount)
+	keepKeys := make(map[Key]keySet)
+	existingParentKeys := make([]Key, 0, len(parentEntities))
+
+	for i, entity := range parentEntities {
+		parentKey := parentMapping.extractPrimaryKey(entity)
+
+		if !parentInserted[i] {
+			existingParentKeys = append(existingParentKeys, parentKey)
+		}
+
+		start := len(submitted)
+		submitted = child.appendTo(entity, submitted)
+		for _, childEntity := range submitted[start:] {
+			childMapping.injectParentalKey(childEntity, parentKey)
+
+			childKey := childMapping.extractPrimaryKey(childEntity)
+			keep := keepKeys[parentKey]
+			if keep == nil {
+				keep = make(keySet)
+				keepKeys[parentKey] = keep
+			}
+			keep[childKey] = struct{}{}
+		}
+	}
+
+	// Load existing relation state
 	existingChildKeys, existingParentByChild, err := u.loadRelationKeys(ctx, childMapping, existingParentKeys)
 	if err != nil {
 		return err
 	}
 
+	// Project, resolve, and save
 	if len(submitted) > 0 {
-		inserts, candidates, err := projectSaveRows(childMapping, submitted)
+		inserts, candidates, err := childMapping.saveLayout.projectRows(submitted)
 		if err != nil {
 			return err
 		}
@@ -224,6 +256,7 @@ func (u *persistence) saveChildRelation(ctx context.Context, parentMapping, chil
 		}
 	}
 
+	// Delete orphaned children
 	var toDelete []Key
 	for parentKey, children := range existingChildKeys {
 		keepSet := keepKeys[parentKey]
@@ -234,67 +267,6 @@ func (u *persistence) saveChildRelation(ctx context.Context, parentMapping, chil
 		}
 	}
 	return u.deleteByKeys(ctx, childMapping, toDelete)
-}
-
-func collectSubmittedChildren(parentMapping *entityMapping, parentEntities []any, parentInserted []bool, child *child, childMapping *entityMapping) (submitted []any, keepKeys map[Key]keySet, existingParentKeys []Key) {
-	childCount := 0
-	for _, entity := range parentEntities {
-		childCount += child.count(entity)
-	}
-
-	submitted = make([]any, 0, childCount)
-	keepKeys = make(map[Key]keySet)
-	existingParentKeys = make([]Key, 0, len(parentEntities))
-
-	for i, entity := range parentEntities {
-		parentKey := parentMapping.extractPrimaryKey(entity)
-
-		if !parentInserted[i] {
-			existingParentKeys = append(existingParentKeys, parentKey)
-		}
-
-		start := len(submitted)
-		submitted = child.appendTo(entity, submitted)
-		for _, childEntity := range submitted[start:] {
-			childMapping.injectParentalKey(childEntity, parentKey)
-
-			childKey := childMapping.extractPrimaryKey(childEntity)
-			keep := keepKeys[parentKey]
-			if keep == nil {
-				keep = make(keySet)
-				keepKeys[parentKey] = keep
-			}
-			keep[childKey] = struct{}{}
-		}
-	}
-
-	return
-}
-
-func projectSaveRows(em *entityMapping, entities []any) (inserts, candidates []plannedRow, err error) {
-	submittedKeys := make(map[Key]int, len(entities))
-
-	for i, entity := range entities {
-		values, key := em.saveLayout.projectEntity(entity)
-		planned := plannedRow{index: i, key: key, values: values}
-
-		insert, err := em.saveLayout.isInsert(values)
-		if err != nil {
-			return nil, nil, err
-		}
-
-		if insert {
-			inserts = append(inserts, planned)
-		} else {
-			if previous, ok := submittedKeys[planned.key]; ok {
-				return nil, nil, fmt.Errorf("%w: duplicate submitted key %v at entity indexes %d and %d", ErrConsistency, planned.key, previous, i)
-			}
-			submittedKeys[planned.key] = i
-			candidates = append(candidates, planned)
-		}
-	}
-
-	return inserts, candidates, nil
 }
 
 func (u *persistence) loadRelationKeys(ctx context.Context, childMapping *entityMapping, parentKeys []Key) (map[Key]keySet, map[Key]Key, error) {
