@@ -22,11 +22,11 @@ func newPersistence(registry mappingRegistry, backend backend) *persistence {
 // --- Load ---
 
 func (u *persistence) getByKeys(ctx context.Context, em *entityMapping, ids []Key) ([]any, error) {
-	return u.loadEntities(ctx, em, em.primaryKey, em.primaryColumns, ids)
+	return u.loadEntities(ctx, em, em.primaryKey, em.primaryPlan.columns, ids)
 }
 
 func (u *persistence) getByParentKeys(ctx context.Context, em *entityMapping, parentKeys []Key) ([]any, error) {
-	return u.loadEntities(ctx, em, em.parentalKey, em.parentalColumns, parentKeys)
+	return u.loadEntities(ctx, em, em.parentalKey, em.parentalPlan.columns, parentKeys)
 }
 
 func (u *persistence) loadEntities(ctx context.Context, em *entityMapping, keyNames []string, keyColumns []string, keys []Key) ([]any, error) {
@@ -43,7 +43,7 @@ func (u *persistence) loadEntities(ctx context.Context, em *entityMapping, keyNa
 	rowSet, err := u.backend.LoadRows(ctx, loadRowsOp{
 		schema:        em.schema,
 		table:         em.table,
-		selectColumns: em.allColumns,
+		selectColumns: em.allPlan.columns,
 		keyColumns:    keyColumns,
 		keys:          keys,
 	})
@@ -134,7 +134,7 @@ func (u *persistence) save(ctx context.Context, em *entityMapping, entities []an
 		return nil
 	}
 
-	inserts, candidates, err := projectSaveRows(em, entities)
+	inserts, candidates, err := em.saveLayout.projectRows(entities)
 	if err != nil {
 		return err
 	}
@@ -143,18 +143,21 @@ func (u *persistence) save(ctx context.Context, em *entityMapping, entities []an
 	var toUpdate []plannedRow
 
 	if len(candidates) > 0 {
-		existingKeys, err := u.selectExistingKeys(ctx, em, keysFromPlannedRows(candidates))
+		candidateKeys := make([]Key, len(candidates))
+		for i, row := range candidates {
+			candidateKeys[i] = row.key
+		}
+		existingKeys, err := u.selectExistingKeys(ctx, em, candidateKeys)
 		if err != nil {
 			return err
 		}
-		existing := keySet(existingKeys)
-		hasGeneratedKey := len(em.saveLayout.rows.generatedPrimaryIndexes) > 0
+		existing := newKeySet(existingKeys)
 
 		toUpdate = make([]plannedRow, 0, len(candidates))
 		for _, row := range candidates {
 			if _, ok := existing[row.key]; ok {
 				toUpdate = append(toUpdate, row)
-			} else if hasGeneratedKey {
+			} else if em.saveLayout.hasGeneratedKey() {
 				return fmt.Errorf("%w: generated key %v does not exist in %s", ErrStaleEntity, row.key, em.entityType)
 			} else {
 				toInsert = append(toInsert, row)
@@ -184,35 +187,15 @@ func (u *persistence) savePlannedLevel(ctx context.Context, em *entityMapping, e
 }
 
 func (u *persistence) saveChildRelation(ctx context.Context, parentMapping, childMapping *entityMapping, child *child, parentEntities []any, parentInserted []bool) error {
-	submitted, keepKeys, existingParentKeys := collectSubmittedChildren(parentMapping, parentEntities, parentInserted, child, childMapping)
-
-	existing, err := u.loadRelationState(ctx, childMapping, existingParentKeys)
-	if err != nil {
-		return err
-	}
-
-	if len(submitted) > 0 {
-		toInsert, toUpdate, err := classifyChildRows(childMapping, submitted, &existing)
-		if err != nil {
-			return err
-		}
-		if err := u.savePlannedLevel(ctx, childMapping, submitted, toInsert, toUpdate); err != nil {
-			return err
-		}
-	}
-
-	return u.deleteByKeys(ctx, childMapping, existing.orphanedKeys(keepKeys))
-}
-
-func collectSubmittedChildren(parentMapping *entityMapping, parentEntities []any, parentInserted []bool, child *child, childMapping *entityMapping) (submitted []any, keepKeys map[Key]map[Key]struct{}, existingParentKeys []Key) {
+	// Collect submitted children and inject parental keys
 	childCount := 0
 	for _, entity := range parentEntities {
 		childCount += child.count(entity)
 	}
 
-	submitted = make([]any, 0, childCount)
-	keepKeys = make(map[Key]map[Key]struct{})
-	existingParentKeys = make([]Key, 0, len(parentEntities))
+	submitted := make([]any, 0, childCount)
+	keepKeys := make(map[Key]keySet)
+	existingParentKeys := make([]Key, 0, len(parentEntities))
 
 	for i, entity := range parentEntities {
 		parentKey := parentMapping.extractPrimaryKey(entity)
@@ -224,232 +207,183 @@ func collectSubmittedChildren(parentMapping *entityMapping, parentEntities []any
 		start := len(submitted)
 		submitted = child.appendTo(entity, submitted)
 		for _, childEntity := range submitted[start:] {
-			injectParentalKey(childEntity, childMapping, parentKey)
+			childMapping.injectParentalKey(childEntity, parentKey)
 
 			childKey := childMapping.extractPrimaryKey(childEntity)
 			keep := keepKeys[parentKey]
 			if keep == nil {
-				keep = make(map[Key]struct{})
+				keep = make(keySet)
 				keepKeys[parentKey] = keep
 			}
 			keep[childKey] = struct{}{}
 		}
 	}
 
-	existingParentKeys = uniqueKeys(existingParentKeys)
-	return
-}
-
-func injectParentalKey(childEntity any, childMapping *entityMapping, parentKey Key) {
-	entityValue := reflect.ValueOf(childEntity).Elem()
-	for i, field := range childMapping.parentalPlan.fields {
-		field.setOn(entityValue, parentKey.At(i))
-	}
-}
-
-func classifyChildRows(childMapping *entityMapping, submitted []any, existing *relationState) (toInsert, toUpdate []plannedRow, err error) {
-	inserts, candidates, err := projectSaveRows(childMapping, submitted)
+	// Load existing relation state
+	existingChildKeys, existingParentByChild, err := u.loadRelationKeys(ctx, childMapping, existingParentKeys)
 	if err != nil {
-		return nil, nil, err
+		return err
 	}
 
-	toInsert = inserts
-	hasGeneratedKey := len(childMapping.saveLayout.rows.generatedPrimaryIndexes) > 0
+	// Project, resolve, and save
+	if len(submitted) > 0 {
+		inserts, candidates, err := childMapping.saveLayout.projectRows(submitted)
+		if err != nil {
+			return err
+		}
 
-	for _, row := range candidates {
-		parentKey := childMapping.extractParentalKey(submitted[row.index])
-		childKey := row.key
-		existingChildren := existing.childKeysByParent[parentKey]
+		toInsert := inserts
+		var toUpdate []plannedRow
 
-		if _, ok := existingChildren[childKey]; ok {
-			toUpdate = append(toUpdate, row)
-		} else if hasGeneratedKey {
-			return nil, nil, fmt.Errorf("%w: generated key %v does not exist in parent relation for %s", ErrStaleEntity, childKey, childMapping.entityType)
-		} else {
-			if owner, ok := existing.parentByChildKey[childKey]; ok && owner != parentKey {
-				return nil, nil, fmt.Errorf("%w: key %v already exists under a different parent in %s", ErrConsistency, childKey, childMapping.entityType)
+		for _, row := range candidates {
+			parentKey := childMapping.extractParentalKey(submitted[row.index])
+			childKey := row.key
+
+			if _, ok := existingChildKeys[parentKey][childKey]; ok {
+				toUpdate = append(toUpdate, row)
+			} else if childMapping.saveLayout.hasGeneratedKey() {
+				return fmt.Errorf("%w: generated key %v does not exist in parent relation for %s", ErrStaleEntity, childKey, childMapping.entityType)
+			} else {
+				if owner, ok := existingParentByChild[childKey]; ok && owner != parentKey {
+					return fmt.Errorf("%w: key %v already exists under a different parent in %s", ErrConsistency, childKey, childMapping.entityType)
+				}
+				toInsert = append(toInsert, row)
 			}
-			toInsert = append(toInsert, row)
+		}
+
+		if err := u.savePlannedLevel(ctx, childMapping, submitted, toInsert, toUpdate); err != nil {
+			return err
 		}
 	}
 
-	return toInsert, toUpdate, nil
-}
-
-// --- Relation State ---
-
-type relationState struct {
-	childKeysByParent map[Key]map[Key]struct{}
-	parentByChildKey  map[Key]Key
-}
-
-func (s *relationState) add(parentKey, childKey Key) {
-	children := s.childKeysByParent[parentKey]
-	if children == nil {
-		children = make(map[Key]struct{})
-		s.childKeysByParent[parentKey] = children
-	}
-	children[childKey] = struct{}{}
-	s.parentByChildKey[childKey] = parentKey
-}
-
-func (s relationState) orphanedKeys(keep map[Key]map[Key]struct{}) []Key {
-	var orphaned []Key
-	for parentKey, existingChildren := range s.childKeysByParent {
-		keepSet := keep[parentKey]
-		for childKey := range existingChildren {
+	// Delete orphaned children
+	var toDelete []Key
+	for parentKey, children := range existingChildKeys {
+		keepSet := keepKeys[parentKey]
+		for childKey := range children {
 			if _, ok := keepSet[childKey]; !ok {
-				orphaned = append(orphaned, childKey)
+				toDelete = append(toDelete, childKey)
 			}
 		}
 	}
-	return orphaned
+	return u.deleteByKeys(ctx, childMapping, toDelete)
 }
 
-func (u *persistence) loadRelationState(ctx context.Context, childMapping *entityMapping, parentKeys []Key) (relationState, error) {
-	state := relationState{
-		childKeysByParent: make(map[Key]map[Key]struct{}),
-		parentByChildKey:  make(map[Key]Key),
-	}
+func (u *persistence) loadRelationKeys(ctx context.Context, childMapping *entityMapping, parentKeys []Key) (map[Key]keySet, map[Key]Key, error) {
+	childKeysByParent := make(map[Key]keySet)
+	parentByChildKey := make(map[Key]Key)
 	if len(parentKeys) == 0 {
-		return state, nil
+		return childKeysByParent, parentByChildKey, nil
 	}
-
-	selectColumns := make([]string, 0, len(childMapping.parentalColumns)+len(childMapping.primaryColumns))
-	selectColumns = append(selectColumns, childMapping.parentalColumns...)
-	selectColumns = append(selectColumns, childMapping.primaryColumns...)
 
 	rowSet, err := u.backend.LoadRows(ctx, loadRowsOp{
 		schema:        childMapping.schema,
 		table:         childMapping.table,
-		selectColumns: selectColumns,
-		keyColumns:    childMapping.parentalColumns,
+		selectColumns: childMapping.relationColumns,
+		keyColumns:    childMapping.parentalPlan.columns,
 		keys:          parentKeys,
 	})
 	if err != nil {
-		return state, err
+		return nil, nil, err
+	}
+	defer func() { _ = rowSet.Close() }()
+
+	parentScanned, childScanned, err := u.scanKeyPairs(rowSet, childMapping.parentalPlan.types, childMapping.primaryPlan.types)
+	if err != nil {
+		return nil, nil, err
 	}
 
-	parentTypes := childMapping.parentalPlan.types
-	childTypes := childMapping.primaryPlan.types
-	parentValues := make([]any, len(parentTypes))
-	childValues := make([]any, len(childTypes))
-	dest := make([]any, 0, len(parentValues)+len(childValues))
-	for i := range parentValues {
-		dest = append(dest, &parentValues[i])
-	}
-	for i := range childValues {
-		dest = append(dest, &childValues[i])
+	for i := range parentScanned {
+		pk := parentScanned[i]
+		ck := childScanned[i]
+		children := childKeysByParent[pk]
+		if children == nil {
+			children = make(keySet)
+			childKeysByParent[pk] = children
+		}
+		children[ck] = struct{}{}
+		parentByChildKey[ck] = pk
 	}
 
-	for rowSet.Next() {
-		if err := rowSet.Scan(dest...); err != nil {
-			_ = rowSet.Close()
-			return state, err
-		}
-		for i, value := range parentValues {
-			parentValues[i] = coerceScannedValue(normalizeScannedValue(value), parentTypes[i])
-		}
-		for i, value := range childValues {
-			childValues[i] = coerceScannedValue(normalizeScannedValue(value), childTypes[i])
-		}
-		state.add(NewKey(parentValues...), NewKey(childValues...))
-	}
-	if err := rowSet.Close(); err != nil {
-		return state, err
-	}
-
-	return state, nil
+	return childKeysByParent, parentByChildKey, nil
 }
 
 // --- Save Execution ---
 
 func (u *persistence) savePlannedRows(ctx context.Context, em *entityMapping, entities []any, toInsert, toUpdate []plannedRow) ([]bool, error) {
-	saveOp := saveRowsOp{
-		schema: em.schema,
-		table:  em.table,
-		layout: &em.saveLayout.rows,
-	}
-
-	savedRows := make([]savedRow, 0, len(entities))
 	inserted := make([]bool, len(entities))
+
 	if len(toInsert) > 0 {
-		insertedRows, err := u.backend.InsertRows(ctx, saveOp, toInsert)
+		rowSet, err := u.backend.InsertRows(ctx, em.saveLayout.newInsertOp(em.schema, em.table, toInsert))
 		if err != nil {
 			return nil, err
 		}
-		if len(insertedRows) != len(toInsert) {
-			return nil, fmt.Errorf("%w: expected %d inserted rows, got %d", ErrConsistency, len(toInsert), len(insertedRows))
+		n, err := u.scanReturning(em, entities, toInsert, rowSet)
+		if err != nil {
+			return nil, err
 		}
-		savedRows = append(savedRows, insertedRows...)
+		if n != len(toInsert) {
+			return nil, fmt.Errorf("%w: expected %d inserted rows, got %d", ErrConsistency, len(toInsert), n)
+		}
 		for _, row := range toInsert {
 			inserted[row.index] = true
 		}
 	}
+
 	if len(toUpdate) > 0 {
-		updatedRows, err := u.backend.UpdateRows(ctx, saveOp, toUpdate)
+		rowSet, err := u.backend.UpdateRows(ctx, em.saveLayout.newUpdateOp(em.schema, em.table, toUpdate))
 		if err != nil {
 			return nil, err
 		}
-		if len(updatedRows) != len(toUpdate) {
-			return nil, fmt.Errorf("%w: expected %d updated rows, got %d", ErrStaleEntity, len(toUpdate), len(updatedRows))
-		}
-		savedRows = append(savedRows, updatedRows...)
-	}
-
-	seen := make([]bool, len(entities))
-	for _, saved := range savedRows {
-		if saved.index < 0 || saved.index >= len(entities) {
-			return nil, fmt.Errorf("returned row index %d out of range", saved.index)
-		}
-		if seen[saved.index] {
-			return nil, fmt.Errorf("duplicate returned row index %d", saved.index)
-		}
-		seen[saved.index] = true
-
-		if err := u.applyReturnedValues(entities[saved.index], em.saveLayout.returningFields, saved.values); err != nil {
+		n, err := u.scanReturning(em, entities, toUpdate, rowSet)
+		if err != nil {
 			return nil, err
 		}
-	}
-
-	for i, ok := range seen {
-		if !ok {
-			return nil, fmt.Errorf("missing returned row for entity index %d", i)
+		if n != len(toUpdate) {
+			return nil, fmt.Errorf("%w: expected %d updated rows, got %d", ErrStaleEntity, len(toUpdate), n)
 		}
 	}
 
 	return inserted, nil
 }
 
+func (u *persistence) scanReturning(em *entityMapping, entities []any, planned []plannedRow, rowSet rows) (int, error) {
+	defer func() { _ = rowSet.Close() }()
+
+	count := 0
+	for rowSet.Next() {
+		if count >= len(planned) {
+			return count + 1, nil
+		}
+		if err := u.scanEntity(entities[planned[count].index], rowSet, em.saveLayout.returningFields); err != nil {
+			return 0, err
+		}
+		count++
+	}
+	return count, nil
+}
+
 func (u *persistence) selectExistingKeys(ctx context.Context, em *entityMapping, keys []Key) ([]Key, error) {
-	keys = uniqueKeys(keys)
 	if len(keys) == 0 {
 		return nil, nil
 	}
-	return u.backend.SelectExistingKeys(ctx, keyScanOp{
-		schema:     em.schema,
-		table:      em.table,
-		keyColumns: em.primaryColumns,
-		keyTypes:   em.primaryPlan.types,
-		keys:       keys,
+	rowSet, err := u.backend.LoadRows(ctx, loadRowsOp{
+		schema:        em.schema,
+		table:         em.table,
+		selectColumns: em.primaryPlan.columns,
+		keyColumns:    em.primaryPlan.columns,
+		keys:          keys,
 	})
-}
-
-func (u *persistence) applyReturnedValues(entity any, fields []*field, values []any) error {
-	if len(values) != len(fields) {
-		return fmt.Errorf("expected %d returned values, got %d", len(fields), len(values))
+	if err != nil {
+		return nil, err
 	}
-	entityValue := reflect.ValueOf(entity).Elem()
-	for i, field := range fields {
-		field.setOn(entityValue, values[i])
-	}
-	return nil
+	defer func() { _ = rowSet.Close() }()
+	return u.scanTypedKeys(rowSet, em.primaryPlan.types)
 }
 
 // --- Delete ---
 
 func (u *persistence) deleteByKeys(ctx context.Context, em *entityMapping, keys []Key) error {
-	keys = uniqueKeys(keys)
 	if len(keys) == 0 {
 		return nil
 	}
@@ -473,13 +407,12 @@ func (u *persistence) deleteByKeys(ctx context.Context, em *entityMapping, keys 
 	return u.backend.DeleteRowsByKeys(ctx, deleteRowsOp{
 		schema:     em.schema,
 		table:      em.table,
-		keyColumns: em.primaryColumns,
+		keyColumns: em.primaryPlan.columns,
 		keys:       keys,
 	})
 }
 
 func (u *persistence) loadKeysByParentKeys(ctx context.Context, em *entityMapping, parentKeys []Key) ([]Key, error) {
-	parentKeys = uniqueKeys(parentKeys)
 	if len(parentKeys) == 0 {
 		return nil, nil
 	}
@@ -487,8 +420,8 @@ func (u *persistence) loadKeysByParentKeys(ctx context.Context, em *entityMappin
 	rowSet, err := u.backend.LoadRows(ctx, loadRowsOp{
 		schema:        em.schema,
 		table:         em.table,
-		selectColumns: em.primaryColumns,
-		keyColumns:    em.parentalColumns,
+		selectColumns: em.primaryPlan.columns,
+		keyColumns:    em.parentalPlan.columns,
 		keys:          parentKeys,
 	})
 	if err != nil {
@@ -496,102 +429,68 @@ func (u *persistence) loadKeysByParentKeys(ctx context.Context, em *entityMappin
 	}
 	defer func() { _ = rowSet.Close() }()
 
-	return scanTypedKeys(rowSet, em.primaryPlan.types)
+	return u.scanTypedKeys(rowSet, em.primaryPlan.types)
 }
 
-// --- Helpers ---
-
-func projectSaveRows(em *entityMapping, entities []any) (inserts, candidates []plannedRow, err error) {
-	layout := &em.saveLayout.rows
-	hasGeneratedKey := len(layout.generatedPrimaryIndexes) > 0
-	submittedKeys := make(map[Key]int, len(entities))
-
-	for i, entity := range entities {
-		row := make([]any, len(em.saveLayout.rowFields))
-		entityValue := reflect.ValueOf(entity).Elem()
-		for j, field := range em.saveLayout.rowFields {
-			row[j] = field.valueFrom(entityValue)
-		}
-		saveRow := saveRow{values: row}
-		var keyValues [9]any
-		if len(layout.primaryIndexes) > len(keyValues) {
-			panic("ormapper: Key supports up to 9 column values")
-		}
-		for j, idx := range layout.primaryIndexes {
-			keyValues[j] = saveRow.values[idx]
-		}
-		planned := plannedRow{
-			index: i,
-			key:   newKeyFromValues(keyValues[:len(layout.primaryIndexes)]),
-			row:   saveRow,
-		}
-
-		isInsert := false
-		if hasGeneratedKey {
-			zeroGeneratedFields := 0
-			for _, idx := range layout.generatedPrimaryIndexes {
-				value := planned.row.values[idx]
-				if value == nil {
-					zeroGeneratedFields++
-					continue
-				}
-				v := reflect.ValueOf(value)
-				if !v.IsValid() || v.IsZero() {
-					zeroGeneratedFields++
-				}
-			}
-			switch zeroGeneratedFields {
-			case len(layout.generatedPrimaryIndexes):
-				isInsert = true
-			case 0:
-				// non-zero generated key — candidate for update
-			default:
-				return nil, nil, fmt.Errorf("%w: generated primary key fields must be all zero or all non-zero", ErrUnsupportedSemantic)
-			}
-		}
-
-		if isInsert {
-			inserts = append(inserts, planned)
-		} else {
-			if previous, ok := submittedKeys[planned.key]; ok {
-				return nil, nil, fmt.Errorf("%w: duplicate submitted key %v at entity indexes %d and %d", ErrConsistency, planned.key, previous, i)
-			}
-			submittedKeys[planned.key] = i
-			candidates = append(candidates, planned)
-		}
+func (u *persistence) scanTypedKeys(rowSet rows, keyTypes []reflect.Type) ([]Key, error) {
+	if len(keyTypes) == 0 {
+		return nil, nil
 	}
-
-	return inserts, candidates, nil
+	keys := make([]Key, 0)
+	values := make([]any, len(keyTypes))
+	dest := make([]any, len(keyTypes))
+	for i := range values {
+		dest[i] = &values[i]
+	}
+	for rowSet.Next() {
+		if err := rowSet.Scan(dest...); err != nil {
+			return nil, err
+		}
+		for i, value := range values {
+			values[i] = coerceScanned(value, keyTypes[i])
+		}
+		keys = append(keys, NewKey(values...))
+	}
+	return keys, nil
 }
 
-func keysFromPlannedRows(rows []plannedRow) []Key {
-	keys := make([]Key, len(rows))
-	for i, row := range rows {
-		keys[i] = row.key
+func (u *persistence) scanKeyPairs(rowSet rows, leftTypes, rightTypes []reflect.Type) ([]Key, []Key, error) {
+	leftLen := len(leftTypes)
+	values := make([]any, leftLen+len(rightTypes))
+	dest := make([]any, len(values))
+	for i := range values {
+		dest[i] = &values[i]
 	}
-	return keys
-}
-
-func keySet(keys []Key) map[Key]struct{} {
-	result := make(map[Key]struct{}, len(keys))
-	for _, key := range keys {
-		result[key] = struct{}{}
-	}
-	return result
-}
-
-func uniqueKeys(keys []Key) []Key {
-	if len(keys) < 2 {
-		return keys
-	}
-	result := make([]Key, 0, len(keys))
-	seen := make(map[Key]struct{}, len(keys))
-	for _, key := range keys {
-		if _, ok := seen[key]; ok {
-			continue
+	var leftKeys, rightKeys []Key
+	for rowSet.Next() {
+		if err := rowSet.Scan(dest...); err != nil {
+			return nil, nil, err
 		}
-		seen[key] = struct{}{}
-		result = append(result, key)
+		for i, value := range values[:leftLen] {
+			values[i] = coerceScanned(value, leftTypes[i])
+		}
+		for i, value := range values[leftLen:] {
+			values[leftLen+i] = coerceScanned(value, rightTypes[i])
+		}
+		leftKeys = append(leftKeys, NewKey(values[:leftLen]...))
+		rightKeys = append(rightKeys, NewKey(values[leftLen:]...))
 	}
-	return result
+	return leftKeys, rightKeys, nil
+}
+
+func coerceScanned(value any, target reflect.Type) any {
+	if b, ok := value.([]byte); ok {
+		value = string(b)
+	}
+	if value == nil {
+		return nil
+	}
+	v := reflect.ValueOf(value)
+	if v.Type().AssignableTo(target) {
+		return value
+	}
+	if v.Type().ConvertibleTo(target) {
+		return v.Convert(target).Interface()
+	}
+	return value
 }

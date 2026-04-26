@@ -210,3 +210,29 @@ func new8(v0, v1, v2, v3, v4, v5, v6, v7 any) Key {
 func new9(v0, v1, v2, v3, v4, v5, v6, v7, v8 any) Key {
 	return Key{n: 9, v0: v0, vn: keyTail8{v1: v1, v2: v2, v3: v3, v4: v4, v5: v5, v6: v6, v7: v7, v8: v8}}
 }
+
+type keySet map[Key]struct{}
+
+func newKeySet(keys []Key) keySet {
+	s := make(keySet, len(keys))
+	for _, key := range keys {
+		s[key] = struct{}{}
+	}
+	return s
+}
+
+func uniqueKeys(keys []Key) []Key {
+	if len(keys) < 2 {
+		return keys
+	}
+	result := make([]Key, 0, len(keys))
+	seen := make(keySet, len(keys))
+	for _, key := range keys {
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		result = append(result, key)
+	}
+	return result
+}

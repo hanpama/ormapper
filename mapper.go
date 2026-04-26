@@ -167,7 +167,7 @@ func (m *Mapper) DeleteMany(ctx context.Context, db DBTX, entities any) error {
 		keys[i] = mapping.extractPrimaryKey(entity)
 	}
 
-	return newPersistence(m.mappings, m.dialect.newBackend(db)).deleteByKeys(ctx, mapping, keys)
+	return newPersistence(m.mappings, m.dialect.newBackend(db)).deleteByKeys(ctx, mapping, uniqueKeys(keys))
 }
 
 func unwrapDestEntityType(dest any, op string) (reflect.Type, error) {

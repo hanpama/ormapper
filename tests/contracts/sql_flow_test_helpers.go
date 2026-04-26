@@ -65,9 +65,6 @@ func classifySQLFlow(query string) string {
 	if strings.Contains(q, "delete from") {
 		return "DELETE " + table
 	}
-	if strings.Contains(q, ` from "$k" join`) || strings.Contains(q, " from keys join") {
-		return "EXISTS " + table
-	}
 	if strings.Contains(q, ` join "$k"`) || strings.Contains(q, " join keys") {
 		return "LOAD " + table
 	}
