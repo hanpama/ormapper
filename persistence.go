@@ -447,7 +447,7 @@ func (u *persistence) scanTypedKeys(rowSet rows, keyTypes []reflect.Type) ([]Key
 			return nil, err
 		}
 		for i, value := range values {
-			values[i] = coerceScannedValue(normalizeScannedValue(value), keyTypes[i])
+			values[i] = coerceScanned(value, keyTypes[i])
 		}
 		keys = append(keys, NewKey(values...))
 	}
@@ -467,13 +467,30 @@ func (u *persistence) scanKeyPairs(rowSet rows, leftTypes, rightTypes []reflect.
 			return nil, nil, err
 		}
 		for i, value := range values[:leftLen] {
-			values[i] = coerceScannedValue(normalizeScannedValue(value), leftTypes[i])
+			values[i] = coerceScanned(value, leftTypes[i])
 		}
 		for i, value := range values[leftLen:] {
-			values[leftLen+i] = coerceScannedValue(normalizeScannedValue(value), rightTypes[i])
+			values[leftLen+i] = coerceScanned(value, rightTypes[i])
 		}
 		leftKeys = append(leftKeys, NewKey(values[:leftLen]...))
 		rightKeys = append(rightKeys, NewKey(values[leftLen:]...))
 	}
 	return leftKeys, rightKeys, nil
+}
+
+func coerceScanned(value any, target reflect.Type) any {
+	if b, ok := value.([]byte); ok {
+		value = string(b)
+	}
+	if value == nil {
+		return nil
+	}
+	v := reflect.ValueOf(value)
+	if v.Type().AssignableTo(target) {
+		return value
+	}
+	if v.Type().ConvertibleTo(target) {
+		return v.Convert(target).Interface()
+	}
+	return value
 }

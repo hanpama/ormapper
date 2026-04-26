@@ -50,7 +50,9 @@ func scanRowValues(rowSet rows, values []any, dest []any) error {
 		return err
 	}
 	for i, value := range values {
-		values[i] = normalizeScannedValue(value)
+		if b, ok := value.([]byte); ok {
+			values[i] = string(b)
+		}
 	}
 	return nil
 }
@@ -427,7 +429,10 @@ func (b *sqliteBackend) renderGeneratedInsertRows(op insertOp, useSQLiteSequence
 		}
 		b.writeByte('(')
 		b.writeString(strconv.Itoa(idx))
-		values := insertValuesFromRow(op.insertIndexes, planned.values)
+		values := make([]any, len(op.insertIndexes))
+			for j, idx := range op.insertIndexes {
+				values[j] = planned.values[idx]
+			}
 		for _, val := range values {
 			b.writeString(", ")
 			b.writeByte('?')
@@ -524,7 +529,10 @@ func (b *sqliteBackend) renderInsertRows(op insertOp) (string, []any) {
 			b.writeString(", ")
 		}
 		b.writeByte('(')
-		values := insertValuesFromRow(op.insertIndexes, planned.values)
+		values := make([]any, len(op.insertIndexes))
+			for j, idx := range op.insertIndexes {
+				values[j] = planned.values[idx]
+			}
 		for j, val := range values {
 			if j > 0 {
 				b.writeString(", ")

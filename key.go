@@ -1,7 +1,5 @@
 package ormapper
 
-import "reflect"
-
 // Key represents an entity's primary or foreign key value(s).
 // It is a comparable value that can be used as a map key.
 //
@@ -221,29 +219,6 @@ func newKeySet(keys []Key) keySet {
 		s[key] = struct{}{}
 	}
 	return s
-}
-
-func normalizeScannedValue(value any) any {
-	switch v := value.(type) {
-	case []byte:
-		return string(v)
-	default:
-		return value
-	}
-}
-
-func coerceScannedValue(value any, target reflect.Type) any {
-	if value == nil {
-		return nil
-	}
-	v := reflect.ValueOf(value)
-	if v.Type().AssignableTo(target) {
-		return value
-	}
-	if v.Type().ConvertibleTo(target) {
-		return v.Convert(target).Interface()
-	}
-	return value
 }
 
 func uniqueKeys(keys []Key) []Key {
