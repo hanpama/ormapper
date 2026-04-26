@@ -3,6 +3,7 @@ package sqlitetest
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -33,6 +34,164 @@ func TestSQLiteContracts(t *testing.T) {
 		ResetSchema: resetSQLiteSchema,
 		Placeholder: func(int) string { return "?" },
 	})
+}
+
+// --- Converter tests ---
+
+type Status int
+
+const (
+	StatusActive   Status = 0
+	StatusInactive Status = 1
+)
+
+func statusToDB(s Status) (string, error) {
+	switch s {
+	case StatusActive:
+		return "active", nil
+	case StatusInactive:
+		return "inactive", nil
+	default:
+		return "", fmt.Errorf("unknown status: %d", s)
+	}
+}
+
+func statusFromDB(s string) (Status, error) {
+	switch s {
+	case "active":
+		return StatusActive, nil
+	case "inactive":
+		return StatusInactive, nil
+	default:
+		return 0, fmt.Errorf("unknown status: %q", s)
+	}
+}
+
+type Address struct {
+	City   string `json:"city"`
+	Street string `json:"street"`
+}
+
+func addressToDB(a Address) (string, error) {
+	b, err := json.Marshal(a)
+	return string(b), err
+}
+
+func addressFromDB(s string) (Address, error) {
+	var a Address
+	err := json.Unmarshal([]byte(s), &a)
+	return a, err
+}
+
+type converterEntity struct {
+	ID      int64   `ormapper:"auto"`
+	Status  Status
+	Address Address
+}
+
+func TestConverterEnumRoundTrip(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+
+	exec(t, db, `CREATE TABLE converter_entities (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		status TEXT NOT NULL,
+		address TEXT NOT NULL
+	)`)
+
+	mapper := ormapper.MustCompile(ormapper.SQLite,
+		ormapper.Map(&converterEntity{}, ormapper.WithTable("converter_entities"),
+			ormapper.WithConverter("Status", statusToDB, statusFromDB),
+			ormapper.WithConverter("Address", addressToDB, addressFromDB),
+		),
+	)
+
+	// Insert
+	entity := &converterEntity{
+		Status:  StatusActive,
+		Address: Address{City: "Seoul", Street: "Gangnam"},
+	}
+	if err := mapper.Save(ctx, db, entity); err != nil {
+		t.Fatalf("Save insert: %v", err)
+	}
+	if entity.ID == 0 {
+		t.Fatal("expected auto ID")
+	}
+
+	// Verify DB has text values
+	var dbStatus, dbAddress string
+	if err := db.QueryRowContext(ctx, "SELECT status, address FROM converter_entities WHERE id = ?", entity.ID).Scan(&dbStatus, &dbAddress); err != nil {
+		t.Fatalf("raw query: %v", err)
+	}
+	if dbStatus != "active" {
+		t.Fatalf("expected DB status 'active', got %q", dbStatus)
+	}
+	if !strings.Contains(dbAddress, "Seoul") {
+		t.Fatalf("expected DB address to contain 'Seoul', got %q", dbAddress)
+	}
+
+	// Load
+	var loaded *converterEntity
+	if err := mapper.Get(ctx, db, &loaded, ormapper.NewKey(entity.ID)); err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if loaded.Status != StatusActive {
+		t.Fatalf("expected StatusActive, got %d", loaded.Status)
+	}
+	if loaded.Address.City != "Seoul" || loaded.Address.Street != "Gangnam" {
+		t.Fatalf("expected Address{Seoul, Gangnam}, got %+v", loaded.Address)
+	}
+
+	// Update
+	loaded.Status = StatusInactive
+	loaded.Address.City = "Busan"
+	if err := mapper.Save(ctx, db, loaded); err != nil {
+		t.Fatalf("Save update: %v", err)
+	}
+
+	// Verify update in DB
+	if err := db.QueryRowContext(ctx, "SELECT status, address FROM converter_entities WHERE id = ?", loaded.ID).Scan(&dbStatus, &dbAddress); err != nil {
+		t.Fatalf("raw query after update: %v", err)
+	}
+	if dbStatus != "inactive" {
+		t.Fatalf("expected DB status 'inactive', got %q", dbStatus)
+	}
+	if !strings.Contains(dbAddress, "Busan") {
+		t.Fatalf("expected DB address to contain 'Busan', got %q", dbAddress)
+	}
+
+	// Reload and verify
+	var reloaded *converterEntity
+	if err := mapper.Get(ctx, db, &reloaded, ormapper.NewKey(loaded.ID)); err != nil {
+		t.Fatalf("Get after update: %v", err)
+	}
+	if reloaded.Status != StatusInactive {
+		t.Fatalf("expected StatusInactive, got %d", reloaded.Status)
+	}
+	if reloaded.Address.City != "Busan" {
+		t.Fatalf("expected Busan, got %s", reloaded.Address.City)
+	}
+}
+
+func openTestDB(t *testing.T) *sql.DB {
+	t.Helper()
+	name := strings.ReplaceAll(t.Name(), "/", "_")
+	dsn := fmt.Sprintf("file:%s?mode=memory&cache=shared", name)
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
+	t.Cleanup(func() { _ = db.Close() })
+	return db
+}
+
+func exec(t *testing.T, db *sql.DB, query string) {
+	t.Helper()
+	if _, err := db.ExecContext(context.Background(), query); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func resetSQLiteSchema(t *testing.T, ctx context.Context, db *sql.DB) {
