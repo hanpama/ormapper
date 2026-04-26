@@ -339,54 +339,56 @@ func (u *persistence) loadRelationKeys(ctx context.Context, childMapping *entity
 // --- Save Execution ---
 
 func (u *persistence) savePlannedRows(ctx context.Context, em *entityMapping, entities []any, toInsert, toUpdate []plannedRow) ([]bool, error) {
-	savedRows := make([]savedRow, 0, len(entities))
 	inserted := make([]bool, len(entities))
+
 	if len(toInsert) > 0 {
-		res, err := u.backend.InsertRows(ctx, em.saveLayout.newInsertOp(em.schema, em.table, toInsert))
+		rowSet, err := u.backend.InsertRows(ctx, em.saveLayout.newInsertOp(em.schema, em.table, toInsert))
 		if err != nil {
 			return nil, err
 		}
-		if len(res) != len(toInsert) {
-			return nil, fmt.Errorf("%w: expected %d inserted rows, got %d", ErrConsistency, len(toInsert), len(res))
+		n, err := u.scanReturning(em, entities, toInsert, rowSet)
+		if err != nil {
+			return nil, err
 		}
-		savedRows = append(savedRows, res...)
+		if n != len(toInsert) {
+			return nil, fmt.Errorf("%w: expected %d inserted rows, got %d", ErrConsistency, len(toInsert), n)
+		}
 		for _, row := range toInsert {
 			inserted[row.index] = true
 		}
 	}
+
 	if len(toUpdate) > 0 {
-		res, err := u.backend.UpdateRows(ctx, em.saveLayout.newUpdateOp(em.schema, em.table, toUpdate))
+		rowSet, err := u.backend.UpdateRows(ctx, em.saveLayout.newUpdateOp(em.schema, em.table, toUpdate))
 		if err != nil {
 			return nil, err
 		}
-		if len(res) != len(toUpdate) {
-			return nil, fmt.Errorf("%w: expected %d updated rows, got %d", ErrStaleEntity, len(toUpdate), len(res))
-		}
-		savedRows = append(savedRows, res...)
-	}
-
-	seen := make([]bool, len(entities))
-	for _, saved := range savedRows {
-		if saved.index < 0 || saved.index >= len(entities) {
-			return nil, fmt.Errorf("returned row index %d out of range", saved.index)
-		}
-		if seen[saved.index] {
-			return nil, fmt.Errorf("duplicate returned row index %d", saved.index)
-		}
-		seen[saved.index] = true
-
-		if err := em.saveLayout.applyReturningValues(entities[saved.index], saved.values); err != nil {
+		n, err := u.scanReturning(em, entities, toUpdate, rowSet)
+		if err != nil {
 			return nil, err
 		}
-	}
-
-	for i, ok := range seen {
-		if !ok {
-			return nil, fmt.Errorf("missing returned row for entity index %d", i)
+		if n != len(toUpdate) {
+			return nil, fmt.Errorf("%w: expected %d updated rows, got %d", ErrStaleEntity, len(toUpdate), n)
 		}
 	}
 
 	return inserted, nil
+}
+
+func (u *persistence) scanReturning(em *entityMapping, entities []any, planned []plannedRow, rowSet rows) (int, error) {
+	defer func() { _ = rowSet.Close() }()
+
+	count := 0
+	for rowSet.Next() {
+		if count >= len(planned) {
+			return count + 1, nil
+		}
+		if err := u.scanEntity(entities[planned[count].index], rowSet, em.saveLayout.returningFields); err != nil {
+			return 0, err
+		}
+		count++
+	}
+	return count, nil
 }
 
 func (u *persistence) selectExistingKeys(ctx context.Context, em *entityMapping, keys []Key) ([]Key, error) {

@@ -145,12 +145,12 @@ type saveLayout struct {
 	insertColumnsWithGeneratedPrimary []string
 	updateColumns                     []string
 	primaryColumns                    []string
-	primaryIndexes                    []int
-	primaryTypes                      []reflect.Type
-	generatedPrimaryColumns           []string
-	generatedPrimaryIndexes           []int
-	returningColumns                  []string
-	primaryReturningIndexes           []int
+	primaryIndexes          []int
+	generatedPrimaryColumns []string
+	generatedPrimaryIndexes []int
+	returningColumns        []string
+
+	keyFromReturning func([]any) Key
 }
 
 func (sl *saveLayout) projectEntity(entity any) (saveRow, Key) {
@@ -211,34 +211,20 @@ func (sl *saveLayout) newInsertOp(schema, table string, rows []plannedRow) inser
 		generatedPrimaryColumns:           sl.generatedPrimaryColumns,
 		primaryColumns:                    sl.primaryColumns,
 		returningColumns:                  sl.returningColumns,
-		primaryReturningIndexes:           sl.primaryReturningIndexes,
-		primaryTypes:                      sl.primaryTypes,
+		keyFromReturning:                  sl.keyFromReturning,
 	}
 }
 
 func (sl *saveLayout) newUpdateOp(schema, table string, rows []plannedRow) updateOp {
 	return updateOp{
-		schema:                  schema,
-		table:                   table,
-		rows:                    rows,
-		rowColumns:              sl.rowColumns,
-		primaryColumns:          sl.primaryColumns,
-		updateColumns:           sl.updateColumns,
-		returningColumns:        sl.returningColumns,
-		primaryReturningIndexes: sl.primaryReturningIndexes,
-		primaryTypes:            sl.primaryTypes,
+		schema:           schema,
+		table:            table,
+		rows:             rows,
+		rowColumns:       sl.rowColumns,
+		primaryColumns:   sl.primaryColumns,
+		updateColumns:    sl.updateColumns,
+		returningColumns: sl.returningColumns,
 	}
-}
-
-func (sl *saveLayout) applyReturningValues(entity any, values []any) error {
-	if len(values) != len(sl.returningFields) {
-		return fmt.Errorf("expected %d returned values, got %d", len(sl.returningFields), len(values))
-	}
-	entityValue := reflect.ValueOf(entity).Elem()
-	for i, field := range sl.returningFields {
-		field.setOn(entityValue, values[i])
-	}
-	return nil
 }
 
 type entityMapping struct {
@@ -353,11 +339,9 @@ func newSaveLayout(
 	layout.updateColumns = make([]string, 0, len(updatable))
 	layout.primaryColumns = make([]string, 0, len(primaryKey))
 	layout.primaryIndexes = make([]int, 0, len(primaryKey))
-	layout.primaryTypes = make([]reflect.Type, 0, len(primaryKey))
 	layout.generatedPrimaryColumns = make([]string, 0, len(primaryKey))
 	layout.generatedPrimaryIndexes = make([]int, 0, len(primaryKey))
 	layout.returningColumns = make([]string, 0, len(allFields))
-	layout.primaryReturningIndexes = make([]int, 0, len(primaryKey))
 	rowIndexByName := make(map[string]int, len(allFields))
 
 	for _, name := range allFields {
@@ -383,7 +367,6 @@ func newSaveLayout(
 		column := fieldMap[name].column
 		layout.primaryColumns = append(layout.primaryColumns, column)
 		layout.primaryIndexes = append(layout.primaryIndexes, rowIndexByName[name])
-		layout.primaryTypes = append(layout.primaryTypes, fieldMap[name].typ)
 		if !slices.Contains(insertable, name) {
 			layout.generatedPrimaryColumns = append(layout.generatedPrimaryColumns, column)
 			layout.generatedPrimaryIndexes = append(layout.generatedPrimaryIndexes, rowIndexByName[name])
@@ -404,8 +387,19 @@ func newSaveLayout(
 	for _, field := range layout.returningFields {
 		layout.returningColumns = append(layout.returningColumns, field.column)
 	}
-	for _, column := range layout.primaryColumns {
-		layout.primaryReturningIndexes = append(layout.primaryReturningIndexes, slices.Index(layout.returningColumns, column))
+
+	primaryReturningIndexes := make([]int, len(primaryKey))
+	primaryTypes := make([]reflect.Type, len(primaryKey))
+	for i, column := range layout.primaryColumns {
+		primaryReturningIndexes[i] = slices.Index(layout.returningColumns, column)
+		primaryTypes[i] = fieldMap[primaryKey[i]].typ
+	}
+	layout.keyFromReturning = func(values []any) Key {
+		var kv [9]any
+		for i, idx := range primaryReturningIndexes {
+			kv[i] = coerceScannedValue(values[idx], primaryTypes[i])
+		}
+		return newKeyFromValues(kv[:len(primaryReturningIndexes)])
 	}
 
 	return layout

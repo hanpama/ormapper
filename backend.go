@@ -30,8 +30,8 @@ type rows interface {
 type backend interface {
 	LoadRows(ctx context.Context, op loadRowsOp) (rows, error)
 	SelectExistingKeys(ctx context.Context, op keyScanOp) ([]Key, error)
-	InsertRows(ctx context.Context, op insertOp) (insertRes, error)
-	UpdateRows(ctx context.Context, op updateOp) (updateRes, error)
+	InsertRows(ctx context.Context, op insertOp) (rows, error)
+	UpdateRows(ctx context.Context, op updateOp) (rows, error)
 	DeleteRowsByKeys(ctx context.Context, op deleteRowsOp) error
 	FetchQuery(ctx context.Context, stmt sqlQuery) (rows, error)
 	CountQuery(ctx context.Context, stmt sqlQuery) (int64, error)
@@ -63,25 +63,18 @@ type insertOp struct {
 	generatedPrimaryColumns           []string
 	primaryColumns                    []string
 	returningColumns                  []string
-	primaryReturningIndexes           []int
-	primaryTypes                      []reflect.Type
+	keyFromReturning                  func([]any) Key
 }
-
-type insertRes []savedRow
 
 type updateOp struct {
-	schema                  string
-	table                   string
-	rows                    []plannedRow
-	rowColumns              []string
-	primaryColumns          []string
-	updateColumns           []string
-	returningColumns        []string
-	primaryReturningIndexes []int
-	primaryTypes            []reflect.Type
+	schema           string
+	table            string
+	rows             []plannedRow
+	rowColumns       []string
+	primaryColumns   []string
+	updateColumns    []string
+	returningColumns []string
 }
-
-type updateRes []savedRow
 
 type saveRow struct {
 	values []any
@@ -91,11 +84,6 @@ type plannedRow struct {
 	index int
 	key   Key
 	row   saveRow
-}
-
-type savedRow struct {
-	index  int
-	values []any
 }
 
 type deleteRowsOp struct {

@@ -11,6 +11,39 @@ func (e *emptyRows) Next() bool            { return false }
 func (e *emptyRows) Scan(dest ...any) error { return nil }
 func (e *emptyRows) Close() error           { return nil }
 
+type bufferedRows struct {
+	data   [][]any
+	cursor int
+}
+
+func (r *bufferedRows) Next() bool {
+	r.cursor++
+	return r.cursor <= len(r.data)
+}
+
+func (r *bufferedRows) Scan(dest ...any) error {
+	row := r.data[r.cursor-1]
+	for i, d := range dest {
+		dv := reflect.ValueOf(d).Elem()
+		val := row[i]
+		if val == nil {
+			dv.Set(reflect.Zero(dv.Type()))
+			continue
+		}
+		sv := reflect.ValueOf(val)
+		if sv.Type().AssignableTo(dv.Type()) {
+			dv.Set(sv)
+		} else if sv.Type().ConvertibleTo(dv.Type()) {
+			dv.Set(sv.Convert(dv.Type()))
+		} else {
+			dv.Set(sv)
+		}
+	}
+	return nil
+}
+
+func (r *bufferedRows) Close() error { return nil }
+
 func intFromDB(value any) (int, error) {
 	v, err := int64FromDB(value)
 	if err != nil {

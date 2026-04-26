@@ -418,11 +418,11 @@ func (b *postgreSQLBackend) renderSelectExistingKeys(stmt keyScanOp, keys []Key)
 	return b.sqlString(), b.argsBuffer
 }
 
-func (b *postgreSQLBackend) renderGeneratedInsertRows(op insertOp, indexes []int, rows []saveRow) (string, []any) {
+func (b *postgreSQLBackend) renderGeneratedInsertRows(op insertOp) (string, []any) {
 	b.paramIndex = 0
 	insertColumns := op.insertColumns
 	generatedPrimaryColumns := op.generatedPrimaryColumns
-	b.resetArgsBuffer(len(rows)*len(insertColumns) + len(generatedPrimaryColumns)*2)
+	b.resetArgsBuffer(len(op.rows)*len(insertColumns) + len(generatedPrimaryColumns)*2)
 	b.resetSQLBuffer(768)
 
 	b.writeString("WITH \"$r\" (")
@@ -433,13 +433,13 @@ func (b *postgreSQLBackend) renderGeneratedInsertRows(op insertOp, indexes []int
 	}
 	b.writeString(") AS (VALUES ")
 
-	for idx, row := range rows {
+	for idx, planned := range op.rows {
 		if idx > 0 {
 			b.writeString(", ")
 		}
 		b.writeByte('(')
-		b.writeString(strconv.Itoa(indexes[idx]))
-		values := insertValuesFromRow(op.insertIndexes, row)
+		b.writeString(strconv.Itoa(idx))
+		values := insertValuesFromRow(op.insertIndexes, planned.row)
 		for j, val := range values {
 			b.writeString(", ")
 			b.paramIndex++
@@ -510,10 +510,12 @@ func (b *postgreSQLBackend) renderGeneratedInsertRows(op insertOp, indexes []int
 	}
 	b.writeByte(')')
 
-	b.writeString(" SELECT \"$a\".")
-	b.quoteIdentifier("$i")
-	for _, col := range op.returningColumns {
-		b.writeString(", \"$ins\".")
+	b.writeString(" SELECT ")
+	for i, col := range op.returningColumns {
+		if i > 0 {
+			b.writeString(", ")
+		}
+		b.writeString("\"$ins\".")
 		b.quoteIdentifier(col)
 	}
 	b.writeString(" FROM \"$ins\" JOIN \"$a\" ON ")
@@ -532,31 +534,29 @@ func (b *postgreSQLBackend) renderGeneratedInsertRows(op insertOp, indexes []int
 	return b.sqlString(), b.argsBuffer
 }
 
-func (b *postgreSQLBackend) renderInsertRows(op insertOp, rows []saveRow) (string, []any) {
+func (b *postgreSQLBackend) renderInsertRows(op insertOp) (string, []any) {
 	b.paramIndex = 0
 	insertColumns := op.insertColumns
-	b.resetArgsBuffer(len(rows) * len(insertColumns))
+	b.resetArgsBuffer(len(op.rows) * len(insertColumns))
 	b.resetSQLBuffer(512)
 
 	b.writeString("WITH \"$r\" (")
-	for i, col := range insertColumns {
-		if i > 0 {
-			b.writeString(", ")
-		}
+	b.quoteIdentifier("$i")
+	for _, col := range insertColumns {
+		b.writeString(", ")
 		b.quoteIdentifier(col)
 	}
 	b.writeString(") AS (VALUES ")
 
-	for idx, row := range rows {
+	for idx, planned := range op.rows {
 		if idx > 0 {
 			b.writeString(", ")
 		}
 		b.writeByte('(')
-		values := insertValuesFromRow(op.insertIndexes, row)
+		b.writeString(strconv.Itoa(idx))
+		values := insertValuesFromRow(op.insertIndexes, planned.row)
 		for j, val := range values {
-			if j > 0 {
-				b.writeString(", ")
-			}
+			b.writeString(", ")
 			b.paramIndex++
 			if idx == 0 {
 				b.writeString("COALESCE((NULL::")
@@ -574,9 +574,7 @@ func (b *postgreSQLBackend) renderInsertRows(op insertOp, rows []saveRow) (strin
 		}
 		b.writeByte(')')
 	}
-	b.writeString(") ")
-
-	b.writeString("INSERT INTO ")
+	b.writeString("), \"$ins\" AS (INSERT INTO ")
 	b.quoteTable(op.schema, op.table)
 	b.writeString(" (")
 	for i, col := range insertColumns {
@@ -592,24 +590,42 @@ func (b *postgreSQLBackend) renderInsertRows(op insertOp, rows []saveRow) (strin
 		}
 		b.quoteIdentifier(col)
 	}
-	b.writeString(" FROM \"$r\"")
-
-	if len(op.returningColumns) > 0 {
-		b.writeString(" RETURNING ")
-		for i, col := range op.returningColumns {
-			if i > 0 {
-				b.writeString(", ")
-			}
-			b.quoteIdentifier(op.table)
-			b.writeByte('.')
-			b.quoteIdentifier(col)
+	b.writeString(" FROM \"$r\" ORDER BY ")
+	b.quoteIdentifier("$i")
+	b.writeString(" RETURNING ")
+	for i, col := range op.returningColumns {
+		if i > 0 {
+			b.writeString(", ")
 		}
+		b.quoteIdentifier(op.table)
+		b.writeByte('.')
+		b.quoteIdentifier(col)
 	}
+	b.writeString(") SELECT ")
+	for i, col := range op.returningColumns {
+		if i > 0 {
+			b.writeString(", ")
+		}
+		b.writeString("\"$ins\".")
+		b.quoteIdentifier(col)
+	}
+	b.writeString(" FROM \"$ins\" JOIN \"$r\" ON ")
+	for i, col := range op.primaryColumns {
+		if i > 0 {
+			b.writeString(" AND ")
+		}
+		b.writeString("\"$ins\".")
+		b.quoteIdentifier(col)
+		b.writeString(" = \"$r\".")
+		b.quoteIdentifier(col)
+	}
+	b.writeString(" ORDER BY \"$r\".")
+	b.quoteIdentifier("$i")
 
 	return b.sqlString(), b.argsBuffer
 }
 
-func (b *postgreSQLBackend) renderUpdateRows(op updateOp, rows []saveRow) (string, []any) {
+func (b *postgreSQLBackend) renderUpdateRows(op updateOp) (string, []any) {
 	b.paramIndex = 0
 	rowColumns := op.rowColumns
 	keyColumns := op.primaryColumns
@@ -617,27 +633,25 @@ func (b *postgreSQLBackend) renderUpdateRows(op updateOp, rows []saveRow) (strin
 	if len(updateColumns) == 0 {
 		updateColumns = keyColumns[:1]
 	}
-	b.resetArgsBuffer(len(rows) * len(rowColumns))
+	b.resetArgsBuffer(len(op.rows) * len(rowColumns))
 	b.resetSQLBuffer(512)
 
 	b.writeString("WITH \"$r\" (")
-	for i, col := range rowColumns {
-		if i > 0 {
-			b.writeString(", ")
-		}
+	b.quoteIdentifier("$i")
+	for _, col := range rowColumns {
+		b.writeString(", ")
 		b.quoteIdentifier(col)
 	}
 	b.writeString(") AS (VALUES ")
 
-	for idx, row := range rows {
+	for idx, planned := range op.rows {
 		if idx > 0 {
 			b.writeString(", ")
 		}
 		b.writeByte('(')
+		b.writeString(strconv.Itoa(idx))
 		for j := range rowColumns {
-			if j > 0 {
-				b.writeString(", ")
-			}
+			b.writeString(", ")
 			b.paramIndex++
 			if idx == 0 {
 				b.writeString("COALESCE((NULL::")
@@ -651,11 +665,11 @@ func (b *postgreSQLBackend) renderUpdateRows(op updateOp, rows []saveRow) (strin
 				b.writeByte('$')
 				b.writeString(strconv.Itoa(b.paramIndex))
 			}
-			b.argsBuffer = append(b.argsBuffer, row.values[j])
+			b.argsBuffer = append(b.argsBuffer, planned.row.values[j])
 		}
 		b.writeByte(')')
 	}
-	b.writeString(") UPDATE ")
+	b.writeString("), \"$upd\" AS (UPDATE ")
 	b.quoteTable(op.schema, op.table)
 	b.writeString(" SET ")
 	for i, col := range updateColumns {
@@ -677,18 +691,35 @@ func (b *postgreSQLBackend) renderUpdateRows(op updateOp, rows []saveRow) (strin
 		b.writeString(" = \"$r\".")
 		b.quoteIdentifier(col)
 	}
-
-	if len(op.returningColumns) > 0 {
-		b.writeString(" RETURNING ")
-		for i, col := range op.returningColumns {
-			if i > 0 {
-				b.writeString(", ")
-			}
-			b.quoteIdentifier(op.table)
-			b.writeByte('.')
-			b.quoteIdentifier(col)
+	b.writeString(" RETURNING ")
+	for i, col := range op.returningColumns {
+		if i > 0 {
+			b.writeString(", ")
 		}
+		b.quoteIdentifier(op.table)
+		b.writeByte('.')
+		b.quoteIdentifier(col)
 	}
+	b.writeString(") SELECT ")
+	for i, col := range op.returningColumns {
+		if i > 0 {
+			b.writeString(", ")
+		}
+		b.writeString("\"$upd\".")
+		b.quoteIdentifier(col)
+	}
+	b.writeString(" FROM \"$upd\" JOIN \"$r\" ON ")
+	for i, col := range keyColumns {
+		if i > 0 {
+			b.writeString(" AND ")
+		}
+		b.writeString("\"$upd\".")
+		b.quoteIdentifier(col)
+		b.writeString(" = \"$r\".")
+		b.quoteIdentifier(col)
+	}
+	b.writeString(" ORDER BY \"$r\".")
+	b.quoteIdentifier("$i")
 
 	return b.sqlString(), b.argsBuffer
 }
@@ -796,87 +827,26 @@ func (b *postgreSQLBackend) SelectExistingKeys(ctx context.Context, op keyScanOp
 	return scanTypedKeys(rowSet, op.keyTypes)
 }
 
-func (b *postgreSQLBackend) InsertRows(ctx context.Context, op insertOp) (insertRes, error) {
+func (b *postgreSQLBackend) InsertRows(ctx context.Context, op insertOp) (rows, error) {
 	if len(op.rows) == 0 {
-		return nil, nil
+		return &emptyRows{}, nil
 	}
-
-	indexes, saveRows := splitPlannedRows(op.rows)
+	var query string
+	var args []any
 	if len(op.generatedPrimaryColumns) > 0 {
-		return b.insertGeneratedRows(ctx, op, indexes, saveRows)
+		query, args = b.renderGeneratedInsertRows(op)
+	} else {
+		query, args = b.renderInsertRows(op)
 	}
-
-	query, args := b.renderInsertRows(op, saveRows)
-	rowSet, err := b.queryContext(ctx, query, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = rowSet.Close() }()
-
-	return scanKeyedSavedRows(len(op.returningColumns), op.primaryReturningIndexes, op.primaryTypes, op.rows, rowSet)
+	return b.queryContext(ctx, query, args...)
 }
 
-func (b *postgreSQLBackend) insertGeneratedRows(ctx context.Context, op insertOp, indexes []int, rows []saveRow) ([]savedRow, error) {
-	if len(rows) == 0 {
-		return nil, nil
-	}
-	if len(op.generatedPrimaryColumns) == 0 {
-		return nil, fmt.Errorf("generated insert requires generated primary key fields")
-	}
-
-	query, args := b.renderGeneratedInsertRows(op, indexes, rows)
-	rowSet, err := b.queryContext(ctx, query, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = rowSet.Close() }()
-
-	saved, err := b.scanIndexedSavedRows(rowSet, len(op.returningColumns))
-	if err != nil {
-		return nil, err
-	}
-	return saved, nil
-}
-
-func (b *postgreSQLBackend) scanIndexedSavedRows(rowSet rows, returningColumns int) ([]savedRow, error) {
-	dest := make([]any, returningColumns+1)
-	saved := make([]savedRow, 0)
-	for rowSet.Next() {
-		var indexValue any
-		values := make([]any, returningColumns)
-		dest[0] = &indexValue
-		for i := range values {
-			dest[i+1] = &values[i]
-		}
-		if err := rowSet.Scan(dest...); err != nil {
-			return nil, err
-		}
-		index, err := intFromDB(normalizeScannedValue(indexValue))
-		if err != nil {
-			return nil, err
-		}
-		for i, value := range values {
-			values[i] = normalizeScannedValue(value)
-		}
-		saved = append(saved, savedRow{index: index, values: values})
-	}
-	return saved, nil
-}
-
-func (b *postgreSQLBackend) UpdateRows(ctx context.Context, op updateOp) (updateRes, error) {
+func (b *postgreSQLBackend) UpdateRows(ctx context.Context, op updateOp) (rows, error) {
 	if len(op.rows) == 0 {
-		return nil, nil
+		return &emptyRows{}, nil
 	}
-
-	_, saveRows := splitPlannedRows(op.rows)
-	query, args := b.renderUpdateRows(op, saveRows)
-	rowSet, err := b.queryContext(ctx, query, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = rowSet.Close() }()
-
-	return scanKeyedSavedRows(len(op.returningColumns), op.primaryReturningIndexes, op.primaryTypes, op.rows, rowSet)
+	query, args := b.renderUpdateRows(op)
+	return b.queryContext(ctx, query, args...)
 }
 
 func (b *postgreSQLBackend) DeleteRowsByKeys(ctx context.Context, op deleteRowsOp) error {

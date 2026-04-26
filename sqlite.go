@@ -375,7 +375,7 @@ func (b *sqliteBackend) renderSelectExistingKeys(stmt keyScanOp, keys []Key) (st
 	return b.sqlString(), b.argsBuffer
 }
 
-func (b *sqliteBackend) renderGeneratedInsertRows(op insertOp, indexes []int, rows []saveRow, useSQLiteSequence bool) (string, []any, error) {
+func (b *sqliteBackend) renderGeneratedInsertRows(op insertOp, useSQLiteSequence bool) (string, []any, error) {
 	generatedPrimaryColumns := op.generatedPrimaryColumns
 	if len(generatedPrimaryColumns) != 1 {
 		return "", nil, fmt.Errorf("sqlite generated insert correlation requires one generated primary key")
@@ -387,7 +387,7 @@ func (b *sqliteBackend) renderGeneratedInsertRows(op insertOp, indexes []int, ro
 	if useSQLiteSequence {
 		extraArgs = 1
 	}
-	b.resetArgsBuffer(len(rows)*len(insertColumns) + extraArgs)
+	b.resetArgsBuffer(len(op.rows)*len(insertColumns) + extraArgs)
 	b.resetSQLBuffer(768)
 
 	b.writeString("WITH new_rows (")
@@ -398,13 +398,13 @@ func (b *sqliteBackend) renderGeneratedInsertRows(op insertOp, indexes []int, ro
 	}
 	b.writeString(") AS (VALUES ")
 
-	for idx, row := range rows {
+	for idx, planned := range op.rows {
 		if idx > 0 {
 			b.writeString(", ")
 		}
 		b.writeByte('(')
-		b.writeString(strconv.Itoa(indexes[idx]))
-		values := insertValuesFromRow(op.insertIndexes, row)
+		b.writeString(strconv.Itoa(idx))
+		values := insertValuesFromRow(op.insertIndexes, planned.row)
 		for _, val := range values {
 			b.writeString(", ")
 			b.writeByte('?')
@@ -481,10 +481,10 @@ func (b *sqliteBackend) renderGeneratedInsertRows(op insertOp, indexes []int, ro
 	return b.sqlString(), b.argsBuffer, nil
 }
 
-func (b *sqliteBackend) renderInsertRows(op insertOp, rows []saveRow) (string, []any) {
+func (b *sqliteBackend) renderInsertRows(op insertOp) (string, []any) {
 	b.paramIndex = 0
 	insertColumns := op.insertColumns
-	b.resetArgsBuffer(len(rows) * len(insertColumns))
+	b.resetArgsBuffer(len(op.rows) * len(insertColumns))
 	b.resetSQLBuffer(512)
 
 	b.writeString("WITH new_rows (")
@@ -496,12 +496,12 @@ func (b *sqliteBackend) renderInsertRows(op insertOp, rows []saveRow) (string, [
 	}
 	b.writeString(") AS (VALUES ")
 
-	for idx, row := range rows {
+	for idx, planned := range op.rows {
 		if idx > 0 {
 			b.writeString(", ")
 		}
 		b.writeByte('(')
-		values := insertValuesFromRow(op.insertIndexes, row)
+		values := insertValuesFromRow(op.insertIndexes, planned.row)
 		for j, val := range values {
 			if j > 0 {
 				b.writeString(", ")
@@ -545,42 +545,22 @@ func (b *sqliteBackend) renderInsertRows(op insertOp, rows []saveRow) (string, [
 	return b.sqlString(), b.argsBuffer
 }
 
-func (b *sqliteBackend) renderUpdateRows(op updateOp, rows []saveRow) (string, []any) {
-	b.paramIndex = 0
-	rowColumns := op.rowColumns
-	keyColumns := op.primaryColumns
+func (b *sqliteBackend) renderSingleUpdateRow(op updateOp, row saveRow) (string, []any) {
+	b.resetSQLBuffer(256)
+	b.resetArgsBuffer(len(op.rowColumns))
+
 	updateColumns := op.updateColumns
 	if len(updateColumns) == 0 {
-		updateColumns = keyColumns[:1]
+		updateColumns = op.primaryColumns[:1]
 	}
-	b.resetArgsBuffer(len(rows) * len(rowColumns))
-	b.resetSQLBuffer(512)
 
-	b.writeString("WITH new_rows (")
-	for i, col := range rowColumns {
-		if i > 0 {
-			b.writeString(", ")
-		}
-		b.quoteIdentifier(col)
+	// Build column index map
+	colIndex := make(map[string]int, len(op.rowColumns))
+	for i, col := range op.rowColumns {
+		colIndex[col] = i
 	}
-	b.writeString(") AS (VALUES ")
 
-	for idx, row := range rows {
-		if idx > 0 {
-			b.writeString(", ")
-		}
-		b.writeByte('(')
-		for j := range rowColumns {
-			if j > 0 {
-				b.writeString(", ")
-			}
-			b.writeByte('?')
-			b.paramIndex++
-			b.argsBuffer = append(b.argsBuffer, row.values[j])
-		}
-		b.writeByte(')')
-	}
-	b.writeString(") UPDATE ")
+	b.writeString("UPDATE ")
 	b.quoteIdentifier(op.table)
 	b.writeString(" SET ")
 	for i, col := range updateColumns {
@@ -588,21 +568,18 @@ func (b *sqliteBackend) renderUpdateRows(op updateOp, rows []saveRow) (string, [
 			b.writeString(", ")
 		}
 		b.quoteIdentifier(col)
-		b.writeString(" = new_rows.")
-		b.quoteIdentifier(col)
+		b.writeString(" = ?")
+		b.argsBuffer = append(b.argsBuffer, row.values[colIndex[col]])
 	}
-	b.writeString(" FROM new_rows WHERE ")
-	for i, col := range keyColumns {
+	b.writeString(" WHERE ")
+	for i, col := range op.primaryColumns {
 		if i > 0 {
 			b.writeString(" AND ")
 		}
-		b.quoteIdentifier(op.table)
-		b.writeByte('.')
 		b.quoteIdentifier(col)
-		b.writeString(" = new_rows.")
-		b.quoteIdentifier(col)
+		b.writeString(" = ?")
+		b.argsBuffer = append(b.argsBuffer, row.values[colIndex[col]])
 	}
-
 	if len(op.returningColumns) > 0 {
 		b.writeString(" RETURNING ")
 		for i, col := range op.returningColumns {
@@ -704,37 +681,22 @@ func (b *sqliteBackend) SelectExistingKeys(ctx context.Context, op keyScanOp) ([
 	return scanTypedKeys(rowSet, op.keyTypes)
 }
 
-func (b *sqliteBackend) InsertRows(ctx context.Context, op insertOp) (insertRes, error) {
+func (b *sqliteBackend) InsertRows(ctx context.Context, op insertOp) (rows, error) {
 	if len(op.rows) == 0 {
-		return nil, nil
+		return &emptyRows{}, nil
 	}
-
-	indexes, saveRows := splitPlannedRows(op.rows)
 	if len(op.generatedPrimaryColumns) > 0 {
-		return b.insertGeneratedRows(ctx, op, indexes, saveRows)
+		return b.insertGeneratedRows(ctx, op)
 	}
-
-	query, args := b.renderInsertRows(op, saveRows)
-	rowSet, err := b.queryContext(ctx, query, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = rowSet.Close() }()
-
-	return scanKeyedSavedRows(len(op.returningColumns), op.primaryReturningIndexes, op.primaryTypes, op.rows, rowSet)
+	return b.insertManualRows(ctx, op)
 }
 
-func (b *sqliteBackend) insertGeneratedRows(ctx context.Context, op insertOp, indexes []int, rows []saveRow) ([]savedRow, error) {
-	if len(rows) == 0 {
-		return nil, nil
-	}
-
+func (b *sqliteBackend) insertGeneratedRows(ctx context.Context, op insertOp) (rows, error) {
 	useSQLiteSequence, err := b.hasSQLiteSequence(ctx)
 	if err != nil {
 		return nil, err
 	}
-
-	query, args, err := b.renderGeneratedInsertRows(op, indexes, rows, useSQLiteSequence)
+	query, args, err := b.renderGeneratedInsertRows(op, useSQLiteSequence)
 	if err != nil {
 		return nil, err
 	}
@@ -744,68 +706,94 @@ func (b *sqliteBackend) insertGeneratedRows(ctx context.Context, op insertOp, in
 	}
 	defer func() { _ = rowSet.Close() }()
 
-	saved, err := b.scanRowsBySingleIntKeyOrder(op, indexes, rowSet)
-	if err != nil {
-		return nil, err
-	}
-	return saved, nil
-}
-
-func (b *sqliteBackend) scanRowsBySingleIntKeyOrder(op insertOp, indexes []int, rowSet rows) ([]savedRow, error) {
-	if len(op.primaryColumns) != 1 {
-		return nil, fmt.Errorf("ordered generated insert correlation requires one primary key")
-	}
-
+	// Buffer all rows
+	returningCount := len(op.returningColumns)
+	dest := make([]any, returningCount)
 	type keyedRow struct {
-		key    int64
+		pk     int64
 		values []any
 	}
-	returningColumnCount := len(op.returningColumns)
-	dest := make([]any, returningColumnCount)
-	keyed := make([]keyedRow, 0, len(indexes))
+	var keyed []keyedRow
 	for rowSet.Next() {
-		values := make([]any, returningColumnCount)
+		values := make([]any, returningCount)
 		if err := scanRowValues(rowSet, values, dest); err != nil {
 			return nil, err
 		}
-		key := coercedKeyFromIndexes(values, op.primaryReturningIndexes, op.primaryTypes)
-		value, err := int64FromDB(key.At(0))
+		// PK is always at column 0 (primary key fields are first in returningColumns)
+		pk, err := int64FromDB(values[0])
 		if err != nil {
 			return nil, err
 		}
-		keyed = append(keyed, keyedRow{key: value, values: values})
+		keyed = append(keyed, keyedRow{pk: pk, values: values})
 	}
-	sort.Slice(keyed, func(i, j int) bool {
-		return keyed[i].key < keyed[j].key
-	})
+	// Sort by PK (ascending = input order due to ROW_NUMBER)
+	sort.Slice(keyed, func(i, j int) bool { return keyed[i].pk < keyed[j].pk })
 
-	sortedIndexes := append([]int(nil), indexes...)
-	sort.Ints(sortedIndexes)
-	if len(sortedIndexes) != len(keyed) {
-		return nil, fmt.Errorf("expected %d returned rows, got %d", len(sortedIndexes), len(keyed))
+	result := make([][]any, len(keyed))
+	for i, kr := range keyed {
+		result[i] = kr.values
 	}
-
-	saved := make([]savedRow, len(keyed))
-	for i, row := range keyed {
-		saved[i] = savedRow{index: sortedIndexes[i], values: row.values}
-	}
-	return saved, nil
+	return &bufferedRows{data: result}, nil
 }
 
-func (b *sqliteBackend) UpdateRows(ctx context.Context, op updateOp) (updateRes, error) {
-	if len(op.rows) == 0 {
-		return nil, nil
-	}
-
-	_, saveRows := splitPlannedRows(op.rows)
-	query, args := b.renderUpdateRows(op, saveRows)
+func (b *sqliteBackend) insertManualRows(ctx context.Context, op insertOp) (rows, error) {
+	query, args := b.renderInsertRows(op)
 	rowSet, err := b.queryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = rowSet.Close() }()
 
-	return scanKeyedSavedRows(len(op.returningColumns), op.primaryReturningIndexes, op.primaryTypes, op.rows, rowSet)
+	inputByKey := make(map[Key]int, len(op.rows))
+	for i, row := range op.rows {
+		inputByKey[row.key] = i
+	}
+
+	returningCount := len(op.returningColumns)
+	dest := make([]any, returningCount)
+	scanned := make([][]any, len(op.rows))
+	for rowSet.Next() {
+		values := make([]any, returningCount)
+		if err := scanRowValues(rowSet, values, dest); err != nil {
+			return nil, err
+		}
+		key := op.keyFromReturning(values)
+		idx, ok := inputByKey[key]
+		if !ok {
+			return nil, fmt.Errorf("returned key %v does not match any input row", key)
+		}
+		scanned[idx] = values
+	}
+	return &bufferedRows{data: scanned}, nil
+}
+
+func (b *sqliteBackend) UpdateRows(ctx context.Context, op updateOp) (rows, error) {
+	if len(op.rows) == 0 {
+		return &emptyRows{}, nil
+	}
+
+	returningCount := len(op.returningColumns)
+	result := make([][]any, 0, len(op.rows))
+
+	for _, planned := range op.rows {
+		query, args := b.renderSingleUpdateRow(op, planned.row)
+		rowSet, err := b.queryContext(ctx, query, args...)
+		if err != nil {
+			return nil, err
+		}
+		values := make([]any, returningCount)
+		dest := make([]any, returningCount)
+		if rowSet.Next() {
+			if err := scanRowValues(rowSet, values, dest); err != nil {
+				_ = rowSet.Close()
+				return nil, err
+			}
+		}
+		_ = rowSet.Close()
+		result = append(result, values)
+	}
+
+	return &bufferedRows{data: result}, nil
 }
 
 func (b *sqliteBackend) DeleteRowsByKeys(ctx context.Context, op deleteRowsOp) error {
