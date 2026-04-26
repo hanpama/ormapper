@@ -398,64 +398,6 @@ func (b *sqliteBackend) renderSelect(stmt loadRowsOp, keys []Key) (string, []any
 	return b.sqlString(), b.argsBuffer
 }
 
-func (b *sqliteBackend) renderSelectExistingKeys(stmt keyScanOp, keys []Key) (string, []any) {
-	b.paramIndex = 0
-	numKeyColumns := len(stmt.keyColumns)
-	b.resetArgsBuffer(len(keys) * numKeyColumns)
-	b.resetSQLBuffer(512)
-
-	b.writeString("WITH keys (")
-	for i, col := range stmt.keyColumns {
-		if i > 0 {
-			b.writeString(", ")
-		}
-		b.quoteIdentifier(col)
-	}
-	b.writeString(") AS (VALUES ")
-
-	for idx, key := range keys {
-		if idx > 0 {
-			b.writeString(", ")
-		}
-		b.writeByte('(')
-		for j := range stmt.keyColumns {
-			if j > 0 {
-				b.writeString(", ")
-			}
-			b.writeByte('?')
-			b.paramIndex++
-			b.argsBuffer = append(b.argsBuffer, key.At(j))
-		}
-		b.writeByte(')')
-	}
-	b.writeString(") ")
-
-	b.writeString("SELECT ")
-	for i, col := range stmt.keyColumns {
-		if i > 0 {
-			b.writeString(", ")
-		}
-		b.writeString("keys.")
-		b.quoteIdentifier(col)
-	}
-
-	b.writeString(" FROM keys JOIN ")
-	b.quoteIdentifier(stmt.table)
-	b.writeString(" ON ")
-	for i, col := range stmt.keyColumns {
-		if i > 0 {
-			b.writeString(" AND ")
-		}
-		b.quoteIdentifier(stmt.table)
-		b.writeByte('.')
-		b.quoteIdentifier(col)
-		b.writeString(" = keys.")
-		b.quoteIdentifier(col)
-	}
-
-	return b.sqlString(), b.argsBuffer
-}
-
 func (b *sqliteBackend) renderGeneratedInsertRows(op insertOp, useSQLiteSequence bool) (string, []any, error) {
 	generatedPrimaryColumns := op.generatedPrimaryColumns
 	if len(generatedPrimaryColumns) != 1 {
@@ -742,20 +684,6 @@ func (b *sqliteBackend) renderDelete(stmt deleteRowsOp, keys []Key) (string, []a
 func (b *sqliteBackend) LoadRows(ctx context.Context, op loadRowsOp) (rows, error) {
 	query, args := b.renderSelect(op, op.keys)
 	return b.queryContext(ctx, query, args...)
-}
-
-func (b *sqliteBackend) SelectExistingKeys(ctx context.Context, op keyScanOp) ([]Key, error) {
-	if len(op.keys) == 0 {
-		return nil, nil
-	}
-
-	query, args := b.renderSelectExistingKeys(op, op.keys)
-	rowSet, err := b.queryContext(ctx, query, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = rowSet.Close() }()
-	return scanTypedKeys(rowSet, op.keyTypes)
 }
 
 func (b *sqliteBackend) InsertRows(ctx context.Context, op insertOp) (rows, error) {

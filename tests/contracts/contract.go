@@ -596,7 +596,7 @@ func runAggregateSQLFlow(t *testing.T, f Fixture) {
 			t.Fatalf("Save: %v", err)
 		}
 		assertSQLFlow(t, got, []string{
-			"EXISTS orders",
+			"LOAD orders",
 			"UPDATE orders",
 			"LOAD order_notes",
 			"UPDATE order_notes",
@@ -633,7 +633,7 @@ func runAggregateSQLFlow(t *testing.T, f Fixture) {
 			t.Fatalf("Save: %v", err)
 		}
 		assertSQLFlow(t, got, []string{
-			"EXISTS orders",
+			"LOAD orders",
 			"UPDATE orders",
 			"LOAD order_notes",
 			"DELETE order_notes",
@@ -659,7 +659,7 @@ func runAggregateSQLFlow(t *testing.T, f Fixture) {
 			t.Fatalf("expected stale generated root error, got %v", err)
 		}
 		assertSQLFlow(t, got, []string{
-			"EXISTS orders",
+			"LOAD orders",
 		})
 	})
 
@@ -680,7 +680,7 @@ func runAggregateSQLFlow(t *testing.T, f Fixture) {
 			t.Fatalf("Save: %v", err)
 		}
 		assertSQLFlow(t, got, []string{
-			"EXISTS composite",
+			"LOAD composite",
 			"INSERT composite",
 		})
 	})

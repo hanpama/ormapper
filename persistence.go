@@ -288,7 +288,7 @@ func (u *persistence) loadRelationKeys(ctx context.Context, childMapping *entity
 	}
 	defer func() { _ = rowSet.Close() }()
 
-	parentScanned, childScanned, err := scanKeyPairs(rowSet, childMapping.parentalPlan.types, childMapping.primaryPlan.types)
+	parentScanned, childScanned, err := u.scanKeyPairs(rowSet, childMapping.parentalPlan.types, childMapping.primaryPlan.types)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -367,13 +367,18 @@ func (u *persistence) selectExistingKeys(ctx context.Context, em *entityMapping,
 	if len(keys) == 0 {
 		return nil, nil
 	}
-	return u.backend.SelectExistingKeys(ctx, keyScanOp{
-		schema:     em.schema,
-		table:      em.table,
-		keyColumns: em.primaryPlan.columns,
-		keyTypes:   em.primaryPlan.types,
-		keys:       keys,
+	rowSet, err := u.backend.LoadRows(ctx, loadRowsOp{
+		schema:        em.schema,
+		table:         em.table,
+		selectColumns: em.primaryPlan.columns,
+		keyColumns:    em.primaryPlan.columns,
+		keys:          keys,
 	})
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rowSet.Close() }()
+	return u.scanTypedKeys(rowSet, em.primaryPlan.types)
 }
 
 // --- Delete ---
@@ -424,5 +429,51 @@ func (u *persistence) loadKeysByParentKeys(ctx context.Context, em *entityMappin
 	}
 	defer func() { _ = rowSet.Close() }()
 
-	return scanTypedKeys(rowSet, em.primaryPlan.types)
+	return u.scanTypedKeys(rowSet, em.primaryPlan.types)
+}
+
+func (u *persistence) scanTypedKeys(rowSet rows, keyTypes []reflect.Type) ([]Key, error) {
+	if len(keyTypes) == 0 {
+		return nil, nil
+	}
+	keys := make([]Key, 0)
+	values := make([]any, len(keyTypes))
+	dest := make([]any, len(keyTypes))
+	for i := range values {
+		dest[i] = &values[i]
+	}
+	for rowSet.Next() {
+		if err := rowSet.Scan(dest...); err != nil {
+			return nil, err
+		}
+		for i, value := range values {
+			values[i] = coerceScannedValue(normalizeScannedValue(value), keyTypes[i])
+		}
+		keys = append(keys, NewKey(values...))
+	}
+	return keys, nil
+}
+
+func (u *persistence) scanKeyPairs(rowSet rows, leftTypes, rightTypes []reflect.Type) ([]Key, []Key, error) {
+	leftLen := len(leftTypes)
+	values := make([]any, leftLen+len(rightTypes))
+	dest := make([]any, len(values))
+	for i := range values {
+		dest[i] = &values[i]
+	}
+	var leftKeys, rightKeys []Key
+	for rowSet.Next() {
+		if err := rowSet.Scan(dest...); err != nil {
+			return nil, nil, err
+		}
+		for i, value := range values[:leftLen] {
+			values[i] = coerceScannedValue(normalizeScannedValue(value), leftTypes[i])
+		}
+		for i, value := range values[leftLen:] {
+			values[leftLen+i] = coerceScannedValue(normalizeScannedValue(value), rightTypes[i])
+		}
+		leftKeys = append(leftKeys, NewKey(values[:leftLen]...))
+		rightKeys = append(rightKeys, NewKey(values[leftLen:]...))
+	}
+	return leftKeys, rightKeys, nil
 }
