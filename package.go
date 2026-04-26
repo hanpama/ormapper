@@ -10,23 +10,37 @@
 // ormapper does not expose a long-lived session. The caller owns transaction
 // scope by deciding whether each call receives a *sql.DB or a *sql.Tx.
 //
-// Mapping rules:
+// # Struct tags
 //
-//   - The default table name is the snake_case struct name.
-//   - A field named ID is treated as the primary key by default.
-//   - The tag `ormapper:"auto"` marks a field as database-generated.
-//   - The tag `ormapper:"parental"` marks the child foreign key that points to the parent.
-//   - Registered `*Child` and `[]*Child` fields are treated as aggregate children.
-//   - Map(..., WithTable(...), WithSchema(...)) overrides table naming.
+// Fields are configured with the `ormapper` struct tag:
 //
-// Save semantics:
+//   - `ormapper:"auto"` — database-generated field (skip insert/update, backfill from RETURNING).
+//   - `ormapper:"primary"` — explicit primary key (default: a field named ID).
+//   - `ormapper:"parental"` — child foreign key pointing to the parent.
+//   - `ormapper:"column:name"` — override the column name (default: snake_case of field name).
+//   - `ormapper:"skip_insert"` — exclude from INSERT.
+//   - `ormapper:"skip_update"` — exclude from UPDATE.
+//   - `ormapper:"-"` — ignore the field entirely.
+//
+// Tags can be combined: `ormapper:"primary,parental"`.
+//
+// # Mapping options
+//
+//   - WithTable overrides the table name.
+//   - WithSchema sets the schema prefix.
+//   - WithConverter registers a bidirectional type converter for a field.
+//
+// Registered *Child and []*Child fields are treated as aggregate children
+// automatically when the child type is also compiled.
+//
+// # Save semantics
 //
 // Save treats the input as the authoritative aggregate snapshot. It inserts rows
 // with new manual keys, updates rows with existing keys, and deletes children
 // missing from the input value. For auto primary keys, zero means insert and
 // non-zero means update.
 //
-// Example:
+// # Example
 //
 //	type Order struct {
 //	    ID    int64 `ormapper:"auto"`

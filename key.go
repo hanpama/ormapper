@@ -13,10 +13,13 @@ type Key struct {
 	vn any
 }
 
+// Length returns the number of column values in the key.
 func (k Key) Length() int {
 	return k.n
 }
 
+// At returns the key value at the given zero-based column index.
+// Panics if index is out of range.
 func (k Key) At(index int) any {
 	if index < 0 || index >= k.n {
 		panic("ormapper: key index out of range")

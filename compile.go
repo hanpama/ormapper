@@ -21,7 +21,7 @@ func Map(entityPtr any, opts ...MapOption) Mapping {
 }
 
 // MapOption customizes how an entity maps to a table.
-// Build it with WithTable and WithSchema.
+// Build options with WithTable, WithSchema, and WithConverter.
 type MapOption struct {
 	apply func(*entityMetadata)
 }
@@ -111,7 +111,20 @@ func MustCompile(dialect Dialect, mappings ...Mapping) *Mapper {
 }
 
 // WithConverter registers a bidirectional type converter for a field.
-// F is the Go field type, C is the DB column type.
+// F is the Go field type, C is the DB column type. toDB converts on save,
+// fromDB converts on load. Pass it only to Map.
+//
+// Example — storing an enum as text:
+//
+//	ormapper.Map(&Order{},
+//	    ormapper.WithConverter("Status", statusToDB, statusFromDB),
+//	)
+//
+// Example — storing a struct as JSON:
+//
+//	ormapper.Map(&Order{},
+//	    ormapper.WithConverter("Address", jsonMarshal, jsonUnmarshal),
+//	)
 func WithConverter[F, C any](fieldName string, toDB func(F) (C, error), fromDB func(C) (F, error)) MapOption {
 	return MapOption{
 		apply: func(meta *entityMetadata) {
