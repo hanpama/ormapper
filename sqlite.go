@@ -4,9 +4,90 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"reflect"
 	"sort"
 	"strconv"
 )
+
+type bufferedRows struct {
+	data   [][]any
+	cursor int
+}
+
+func (r *bufferedRows) Next() bool {
+	r.cursor++
+	return r.cursor <= len(r.data)
+}
+
+func (r *bufferedRows) Scan(dest ...any) error {
+	row := r.data[r.cursor-1]
+	for i, d := range dest {
+		dv := reflect.ValueOf(d).Elem()
+		val := row[i]
+		if val == nil {
+			dv.Set(reflect.Zero(dv.Type()))
+			continue
+		}
+		sv := reflect.ValueOf(val)
+		if sv.Type().AssignableTo(dv.Type()) {
+			dv.Set(sv)
+		} else if sv.Type().ConvertibleTo(dv.Type()) {
+			dv.Set(sv.Convert(dv.Type()))
+		} else {
+			dv.Set(sv)
+		}
+	}
+	return nil
+}
+
+func (r *bufferedRows) Close() error { return nil }
+
+func scanRowValues(rowSet rows, values []any, dest []any) error {
+	for i := range values {
+		dest[i] = &values[i]
+	}
+	if err := rowSet.Scan(dest...); err != nil {
+		return err
+	}
+	for i, value := range values {
+		values[i] = normalizeScannedValue(value)
+	}
+	return nil
+}
+
+func int64FromDB(value any) (int64, error) {
+	const maxInt64 = int64(^uint64(0) >> 1)
+	switch v := value.(type) {
+	case int:
+		return int64(v), nil
+	case int8:
+		return int64(v), nil
+	case int16:
+		return int64(v), nil
+	case int32:
+		return int64(v), nil
+	case int64:
+		return v, nil
+	case uint:
+		if uint64(v) > uint64(maxInt64) {
+			return 0, fmt.Errorf("integer value %d overflows int64", v)
+		}
+		return int64(v), nil
+	case uint8:
+		return int64(v), nil
+	case uint16:
+		return int64(v), nil
+	case uint32:
+		return int64(v), nil
+	case uint64:
+		if v > uint64(maxInt64) {
+			return 0, fmt.Errorf("integer value %d overflows int64", v)
+		}
+		return int64(v), nil
+	default:
+		return 0, fmt.Errorf("expected integer value, got %T", value)
+	}
+}
 
 type sqliteDialect struct{}
 
@@ -659,10 +740,6 @@ func (b *sqliteBackend) renderDelete(stmt deleteRowsOp, keys []Key) (string, []a
 }
 
 func (b *sqliteBackend) LoadRows(ctx context.Context, op loadRowsOp) (rows, error) {
-	if len(op.keys) == 0 {
-		return &emptyRows{}, nil
-	}
-
 	query, args := b.renderSelect(op, op.keys)
 	return b.queryContext(ctx, query, args...)
 }
@@ -682,9 +759,6 @@ func (b *sqliteBackend) SelectExistingKeys(ctx context.Context, op keyScanOp) ([
 }
 
 func (b *sqliteBackend) InsertRows(ctx context.Context, op insertOp) (rows, error) {
-	if len(op.rows) == 0 {
-		return &emptyRows{}, nil
-	}
 	if len(op.generatedPrimaryColumns) > 0 {
 		return b.insertGeneratedRows(ctx, op)
 	}
@@ -768,10 +842,6 @@ func (b *sqliteBackend) insertManualRows(ctx context.Context, op insertOp) (rows
 }
 
 func (b *sqliteBackend) UpdateRows(ctx context.Context, op updateOp) (rows, error) {
-	if len(op.rows) == 0 {
-		return &emptyRows{}, nil
-	}
-
 	returningCount := len(op.returningColumns)
 	result := make([][]any, 0, len(op.rows))
 

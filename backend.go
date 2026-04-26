@@ -82,6 +82,14 @@ type plannedRow struct {
 	values []any
 }
 
+func insertValuesFromRow(insertIndexes []int, values []any) []any {
+	projected := make([]any, len(insertIndexes))
+	for j, idx := range insertIndexes {
+		projected[j] = values[idx]
+	}
+	return projected
+}
+
 type deleteRowsOp struct {
 	schema     string
 	table      string
