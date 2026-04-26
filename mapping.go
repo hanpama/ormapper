@@ -57,14 +57,6 @@ func (f *field) valueFrom(entity reflect.Value) any {
 	return entity.Field(f.fieldIndex).Interface()
 }
 
-func (f *field) dbValueFrom(entity reflect.Value) (any, error) {
-	value := entity.Field(f.fieldIndex).Interface()
-	if f.converter != nil {
-		return f.converter.toDB(value)
-	}
-	return value, nil
-}
-
 func (f *field) setOn(entity reflect.Value, value any) {
 	field := entity.Field(f.fieldIndex)
 	if value == nil {
