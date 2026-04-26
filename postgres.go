@@ -370,7 +370,10 @@ func (b *postgreSQLBackend) renderGeneratedInsertRows(op insertOp) (string, []an
 		}
 		b.writeByte('(')
 		b.writeString(strconv.Itoa(idx))
-		values := insertValuesFromRow(op.insertIndexes, planned.values)
+		values := make([]any, len(op.insertIndexes))
+			for j, idx := range op.insertIndexes {
+				values[j] = planned.values[idx]
+			}
 		for j, val := range values {
 			b.writeString(", ")
 			b.paramIndex++
@@ -485,7 +488,10 @@ func (b *postgreSQLBackend) renderInsertRows(op insertOp) (string, []any) {
 		}
 		b.writeByte('(')
 		b.writeString(strconv.Itoa(idx))
-		values := insertValuesFromRow(op.insertIndexes, planned.values)
+		values := make([]any, len(op.insertIndexes))
+			for j, idx := range op.insertIndexes {
+				values[j] = planned.values[idx]
+			}
 		for j, val := range values {
 			b.writeString(", ")
 			b.paramIndex++

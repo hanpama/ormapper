@@ -433,7 +433,17 @@ func newSaveLayout(
 	layout.keyFromReturning = func(values []any) Key {
 		var kv [9]any
 		for i, idx := range primaryReturningIndexes {
-			kv[i] = coerceScannedValue(values[idx], primaryTypes[i])
+			val := values[idx]
+			if b, ok := val.([]byte); ok {
+				val = string(b)
+			}
+			if val != nil {
+				v := reflect.ValueOf(val)
+				if !v.Type().AssignableTo(primaryTypes[i]) && v.Type().ConvertibleTo(primaryTypes[i]) {
+					val = v.Convert(primaryTypes[i]).Interface()
+				}
+			}
+			kv[i] = val
 		}
 		return newKeyFromValues(kv[:len(primaryReturningIndexes)])
 	}
