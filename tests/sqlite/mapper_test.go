@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	ormapper "github.com/hanpama/ormapper"
-	"github.com/hanpama/ormapper/tests/contracts"
+	agg "github.com/hanpama/agg"
+	"github.com/hanpama/agg/tests/contracts"
 	_ "modernc.org/sqlite"
 )
 
@@ -30,7 +30,7 @@ func TestSQLiteContracts(t *testing.T) {
 	contracts.Run(t, contracts.Fixture{
 		Name:        "sqlite",
 		DB:          db,
-		Dialect:     ormapper.SQLite,
+		Dialect:     agg.SQLite,
 		ResetSchema: resetSQLiteSchema,
 		Placeholder: func(int) string { return "?" },
 	})
@@ -84,7 +84,7 @@ func addressFromDB(s string) (Address, error) {
 }
 
 type converterEntity struct {
-	ID      int64   `ormapper:"auto"`
+	ID      int64   `agg:"auto"`
 	Status  Status
 	Address Address
 }
@@ -99,10 +99,10 @@ func TestConverterEnumRoundTrip(t *testing.T) {
 		address TEXT NOT NULL
 	)`)
 
-	mapper := ormapper.MustCompile(ormapper.SQLite,
-		ormapper.Map(&converterEntity{}, ormapper.WithTable("converter_entities"),
-			ormapper.WithConverter("Status", statusToDB, statusFromDB),
-			ormapper.WithConverter("Address", addressToDB, addressFromDB),
+	mapper := agg.MustCompile(agg.SQLite,
+		agg.Map(&converterEntity{}, agg.WithTable("converter_entities"),
+			agg.WithConverter("Status", statusToDB, statusFromDB),
+			agg.WithConverter("Address", addressToDB, addressFromDB),
 		),
 	)
 
@@ -132,7 +132,7 @@ func TestConverterEnumRoundTrip(t *testing.T) {
 
 	// Load
 	var loaded *converterEntity
-	if err := mapper.Get(ctx, db, &loaded, ormapper.NewKey(entity.ID)); err != nil {
+	if err := mapper.Get(ctx, db, &loaded, agg.NewKey(entity.ID)); err != nil {
 		t.Fatalf("Get: %v", err)
 	}
 	if loaded.Status != StatusActive {
@@ -162,7 +162,7 @@ func TestConverterEnumRoundTrip(t *testing.T) {
 
 	// Reload and verify
 	var reloaded *converterEntity
-	if err := mapper.Get(ctx, db, &reloaded, ormapper.NewKey(loaded.ID)); err != nil {
+	if err := mapper.Get(ctx, db, &reloaded, agg.NewKey(loaded.ID)); err != nil {
 		t.Fatalf("Get after update: %v", err)
 	}
 	if reloaded.Status != StatusInactive {

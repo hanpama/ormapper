@@ -1,10 +1,10 @@
-module github.com/hanpama/ormapper/tests/postgres
+module github.com/hanpama/agg/tests/postgres
 
 go 1.24.0
 
 require (
-	github.com/hanpama/ormapper v0.0.0
-	github.com/hanpama/ormapper/tests/contracts v0.0.0
+	github.com/hanpama/agg v0.0.0
+	github.com/hanpama/agg/tests/contracts v0.0.0
 	github.com/jackc/pgx/v5 v5.7.6
 )
 
@@ -17,6 +17,6 @@ require (
 	golang.org/x/text v0.24.0 // indirect
 )
 
-replace github.com/hanpama/ormapper => ../..
+replace github.com/hanpama/agg => ../..
 
-replace github.com/hanpama/ormapper/tests/contracts => ../contracts
+replace github.com/hanpama/agg/tests/contracts => ../contracts

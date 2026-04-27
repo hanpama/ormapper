@@ -1,10 +1,10 @@
-module github.com/hanpama/ormapper/tests/sqlite
+module github.com/hanpama/agg/tests/sqlite
 
 go 1.24.0
 
 require (
-	github.com/hanpama/ormapper v0.0.0
-	github.com/hanpama/ormapper/tests/contracts v0.0.0
+	github.com/hanpama/agg v0.0.0
+	github.com/hanpama/agg/tests/contracts v0.0.0
 	modernc.org/sqlite v1.39.1
 )
 
@@ -21,6 +21,6 @@ require (
 	modernc.org/memory v1.11.0 // indirect
 )
 
-replace github.com/hanpama/ormapper => ../..
+replace github.com/hanpama/agg => ../..
 
-replace github.com/hanpama/ormapper/tests/contracts => ../contracts
+replace github.com/hanpama/agg/tests/contracts => ../contracts

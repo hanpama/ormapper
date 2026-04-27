@@ -1,4 +1,4 @@
-package ormapper
+package agg
 
 import (
 	"context"
@@ -21,7 +21,7 @@ func (m *Mapper) getMapping(entityType reflect.Type) (*entityMapping, error) {
 // dest must be a pointer to an entity pointer, for example:
 //
 //	var order *Order
-//	err := mapper.Get(ctx, tx, &order, ormapper.NewKey(id))
+//	err := mapper.Get(ctx, tx, &order, NewKey(id))
 //
 // When the row does not exist, Get leaves *dest as nil.
 func (m *Mapper) Get(ctx context.Context, db DBTX, dest any, id Key) error {
@@ -55,7 +55,7 @@ func (m *Mapper) Get(ctx context.Context, db DBTX, dest any, id Key) error {
 // dest must be a pointer to a slice of entity pointers, for example:
 //
 //	var orders []*Order
-//	err := mapper.GetMany(ctx, tx, &orders, []ormapper.Key{ormapper.NewKey(id1), ormapper.NewKey(id2)})
+//	err := mapper.GetMany(ctx, tx, &orders, []Key{NewKey(id1), NewKey(id2)})
 //
 // The result slice has the same length and order as ids. Missing rows are nil.
 func (m *Mapper) GetMany(ctx context.Context, db DBTX, dest any, ids []Key) error {

@@ -1,4 +1,4 @@
-// Package ormapper persists plain Go aggregates with a small public API.
+// Package agg persists plain Go aggregates with a small public API.
 //
 // The intended workflow is:
 //
@@ -7,22 +7,22 @@
 //  3. Use Get, Save, Delete, and their Many variants for aggregate persistence.
 //  4. Use NewQuery for typed reads.
 //
-// ormapper does not expose a long-lived session. The caller owns transaction
+// agg does not expose a long-lived session. The caller owns transaction
 // scope by deciding whether each call receives a *sql.DB or a *sql.Tx.
 //
 // # Struct tags
 //
-// Fields are configured with the `ormapper` struct tag:
+// Fields are configured with the `agg` struct tag:
 //
-//   - `ormapper:"auto"` — database-generated field (skip insert/update, backfill from RETURNING).
-//   - `ormapper:"primary"` — explicit primary key (default: a field named ID).
-//   - `ormapper:"parental"` — child foreign key pointing to the parent.
-//   - `ormapper:"column:name"` — override the column name (default: snake_case of field name).
-//   - `ormapper:"skip_insert"` — exclude from INSERT.
-//   - `ormapper:"skip_update"` — exclude from UPDATE.
-//   - `ormapper:"-"` — ignore the field entirely.
+//   - `agg:"auto"` — database-generated field (skip insert/update, backfill from RETURNING).
+//   - `agg:"primary"` — explicit primary key (default: a field named ID).
+//   - `agg:"parental"` — child foreign key pointing to the parent.
+//   - `agg:"column:name"` — override the column name (default: snake_case of field name).
+//   - `agg:"skip_insert"` — exclude from INSERT.
+//   - `agg:"skip_update"` — exclude from UPDATE.
+//   - `agg:"-"` — ignore the field entirely.
 //
-// Tags can be combined: `ormapper:"primary,parental"`.
+// Tags can be combined: `agg:"primary,parental"`.
 //
 // # Mapping options
 //
@@ -43,26 +43,26 @@
 // # Example
 //
 //	type Order struct {
-//	    ID    int64 `ormapper:"auto"`
+//	    ID    int64 `agg:"auto"`
 //	    Total int64
 //	    Items []*OrderItem
 //	}
 //
 //	type OrderItem struct {
-//	    ID      int64 `ormapper:"auto"`
-//	    OrderID int64 `ormapper:"parental"`
+//	    ID      int64 `agg:"auto"`
+//	    OrderID int64 `agg:"parental"`
 //	    Name    string
 //	    Qty     int
 //	}
 //
-//	mapper := ormapper.MustCompile(
-//	    ormapper.Postgres,
-//	    ormapper.Map(&Order{}, ormapper.WithTable("orders")),
-//	    ormapper.Map(&OrderItem{}, ormapper.WithTable("order_items")),
+//	mapper := MustCompile(
+//	    Postgres,
+//	    Map(&Order{}, WithTable("orders")),
+//	    Map(&OrderItem{}, WithTable("order_items")),
 //	)
 //
 //	var order *Order
-//	if err := mapper.Get(ctx, tx, &order, ormapper.NewKey(id)); err != nil {
+//	if err := mapper.Get(ctx, tx, &order, NewKey(id)); err != nil {
 //	    return err
 //	}
 //
@@ -71,9 +71,9 @@
 //	    return err
 //	}
 //
-//	query := ormapper.NewQuery[Order](mapper, tx, "o")
+//	query := NewQuery[Order](mapper, tx, "o")
 //	found, err := query.Where("o.total > ?", 0).FetchAll(ctx)
-package ormapper
+package agg
 
 // Postgres renders PostgreSQL SQL.
 var Postgres Dialect = postgresDialect{}

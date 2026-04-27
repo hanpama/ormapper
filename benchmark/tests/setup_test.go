@@ -5,7 +5,7 @@ import (
 	"database/sql"
 	"testing"
 
-	"github.com/hanpama/ormapper/benchmark/shared"
+	"github.com/hanpama/agg/benchmark/shared"
 )
 
 func setupPostgresDB(b *testing.B) (*sql.DB, func()) {

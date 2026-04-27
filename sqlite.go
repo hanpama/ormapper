@@ -1,4 +1,4 @@
-package ormapper
+package agg
 
 import (
 	"context"

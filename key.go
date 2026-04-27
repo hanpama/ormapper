@@ -1,12 +1,12 @@
-package ormapper
+package agg
 
 // Key represents an entity's primary or foreign key value(s).
 // It is a comparable value that can be used as a map key.
 //
 // Examples:
 //
-//	ormapper.NewKey(1)               // single-column key
-//	ormapper.NewKey(orderID, itemID) // composite key
+//	NewKey(1)               // single-column key
+//	NewKey(orderID, itemID) // composite key
 type Key struct {
 	n  int
 	v0 any
@@ -22,7 +22,7 @@ func (k Key) Length() int {
 // Panics if index is out of range.
 func (k Key) At(index int) any {
 	if index < 0 || index >= k.n {
-		panic("ormapper: key index out of range")
+		panic("agg: key index out of range")
 	}
 
 	if index == 0 {
@@ -129,7 +129,7 @@ func (k Key) tailValue(index int) any {
 			return tail.v8
 		}
 	}
-	panic("ormapper: key index out of range")
+	panic("agg: key index out of range")
 }
 
 type keyTail1 struct{ v1 any }
@@ -170,7 +170,7 @@ func newKeyFromValues(vals []any) Key {
 	case 9:
 		return new9(vals[0], vals[1], vals[2], vals[3], vals[4], vals[5], vals[6], vals[7], vals[8])
 	default:
-		panic("ormapper: Key supports up to 9 column values")
+		panic("agg: Key supports up to 9 column values")
 	}
 }
 

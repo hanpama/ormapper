@@ -7,12 +7,12 @@ import (
 	"strings"
 	"testing"
 
-	ormapper "github.com/hanpama/ormapper"
+	agg "github.com/hanpama/agg"
 	_ "modernc.org/sqlite"
 )
 
 type benchOrder struct {
-	ID         int64 `ormapper:"auto"`
+	ID         int64 `agg:"auto"`
 	CustomerID int64
 	Total      float64
 	Items      []*benchOrderItem
@@ -20,15 +20,15 @@ type benchOrder struct {
 }
 
 type benchOrderItem struct {
-	ID      int64 `ormapper:"auto"`
-	OrderID int64 `ormapper:"parental"`
+	ID      int64 `agg:"auto"`
+	OrderID int64 `agg:"parental"`
 	Name    string
 	Qty     int
 }
 
 type benchOrderNote struct {
-	ID      int64 `ormapper:"auto"`
-	OrderID int64 `ormapper:"parental"`
+	ID      int64 `agg:"auto"`
+	OrderID int64 `agg:"parental"`
 	Body    string
 }
 
@@ -56,12 +56,12 @@ func setupBenchDB(b *testing.B) *sql.DB {
 	return db
 }
 
-func benchMapper() *ormapper.Mapper {
-	return ormapper.MustCompile(
-		ormapper.SQLite,
-		ormapper.Map(&benchOrder{}, ormapper.WithTable("orders")),
-		ormapper.Map(&benchOrderItem{}, ormapper.WithTable("order_items")),
-		ormapper.Map(&benchOrderNote{}, ormapper.WithTable("order_notes")),
+func benchMapper() *agg.Mapper {
+	return agg.MustCompile(
+		agg.SQLite,
+		agg.Map(&benchOrder{}, agg.WithTable("orders")),
+		agg.Map(&benchOrderItem{}, agg.WithTable("order_items")),
+		agg.Map(&benchOrderNote{}, agg.WithTable("order_notes")),
 	)
 }
 
@@ -113,7 +113,7 @@ func BenchmarkAggregate_Select(b *testing.B) {
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
 		var order *benchOrder
-		if err := mapper.Get(ctx, db, &order, ormapper.NewKey(ids[i%len(ids)])); err != nil {
+		if err := mapper.Get(ctx, db, &order, agg.NewKey(ids[i%len(ids)])); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -141,7 +141,7 @@ func BenchmarkAggregate_Update(b *testing.B) {
 			b.Fatal(err)
 		}
 		var order *benchOrder
-		if err := mapper.Get(ctx, tx, &order, ormapper.NewKey(ids[i%len(ids)])); err != nil {
+		if err := mapper.Get(ctx, tx, &order, agg.NewKey(ids[i%len(ids)])); err != nil {
 			_ = tx.Rollback()
 			b.Fatal(err)
 		}

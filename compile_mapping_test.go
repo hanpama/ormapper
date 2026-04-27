@@ -1,4 +1,4 @@
-package ormapper
+package agg
 
 import (
 	"reflect"
@@ -6,23 +6,23 @@ import (
 )
 
 type mappingTestChild struct {
-	ID       int64 `ormapper:"auto"`
-	ParentID int64 `ormapper:"parental"`
+	ID       int64 `agg:"auto"`
+	ParentID int64 `agg:"parental"`
 	Name     string
 }
 
 type mappingTestNote struct {
-	ID       int64 `ormapper:"auto"`
-	ParentID int64 `ormapper:"parental"`
+	ID       int64 `agg:"auto"`
+	ParentID int64 `agg:"parental"`
 	Body     string
 }
 
 type mappingTestParent struct {
-	ID        int64  `ormapper:"auto"`
-	Name      string `ormapper:"column:display_name"`
-	Ignored   string `ormapper:"-"`
-	Readonly  int    `ormapper:"skip_insert,skip_update"`
-	WriteOnce int    `ormapper:"skip_update"`
+	ID        int64  `agg:"auto"`
+	Name      string `agg:"column:display_name"`
+	Ignored   string `agg:"-"`
+	Readonly  int    `agg:"skip_insert,skip_update"`
+	WriteOnce int    `agg:"skip_update"`
 	Children  []*mappingTestChild
 	Note      *mappingTestNote
 	Loose     *unregisteredMappingStruct
@@ -34,8 +34,8 @@ type unregisteredMappingStruct struct {
 }
 
 type mappingTestComposite struct {
-	Key1 int    `ormapper:"primary"`
-	Key2 string `ormapper:"primary"`
+	Key1 int    `agg:"primary"`
+	Key2 string `agg:"primary"`
 	Name string
 }
 
@@ -45,12 +45,12 @@ type invalidNoPrimary struct {
 
 type invalidExplicitChild struct {
 	ID  int64
-	Bad int `ormapper:"child"`
+	Bad int `agg:"child"`
 }
 
 type invalidUnregisteredChildParent struct {
 	ID    int64
-	Child *unregisteredMappingStruct `ormapper:"child"`
+	Child *unregisteredMappingStruct `agg:"child"`
 }
 
 type invalidChildWithoutParentalParent struct {
@@ -70,12 +70,12 @@ type invalidKeyTypeParent struct {
 
 type invalidKeyTypeChild struct {
 	ID       int64
-	ParentID int `ormapper:"parental"`
+	ParentID int `agg:"parental"`
 }
 
 type invalidGeneratedComposite struct {
-	ID       int64 `ormapper:"auto"`
-	TenantID int64 `ormapper:"primary"`
+	ID       int64 `agg:"auto"`
+	TenantID int64 `agg:"primary"`
 	Name     string
 }
 

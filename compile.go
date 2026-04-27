@@ -1,4 +1,4 @@
-package ormapper
+package agg
 
 import (
 	"fmt"
@@ -116,14 +116,14 @@ func MustCompile(dialect Dialect, mappings ...Mapping) *Mapper {
 //
 // Example — storing an enum as text:
 //
-//	ormapper.Map(&Order{},
-//	    ormapper.WithConverter("Status", statusToDB, statusFromDB),
+//	Map(&Order{},
+//	    WithConverter("Status", statusToDB, statusFromDB),
 //	)
 //
 // Example — storing a struct as JSON:
 //
-//	ormapper.Map(&Order{},
-//	    ormapper.WithConverter("Address", jsonMarshal, jsonUnmarshal),
+//	Map(&Order{},
+//	    WithConverter("Address", jsonMarshal, jsonUnmarshal),
 //	)
 func WithConverter[F, C any](fieldName string, toDB func(F) (C, error), fromDB func(C) (F, error)) MapOption {
 	return MapOption{
@@ -186,7 +186,7 @@ func analyzeStruct(structType reflect.Type) []fieldMetadata {
 			defaultColumn: toSnakeCase(structField.Name),
 		}
 
-		tagValue := structField.Tag.Get("ormapper")
+		tagValue := structField.Tag.Get("agg")
 		if tagValue != "" {
 			if tagValue == "-" {
 				metadata.ignoreTag = true

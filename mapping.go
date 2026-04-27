@@ -1,4 +1,4 @@
-package ormapper
+package agg
 
 import (
 	"fmt"
@@ -198,7 +198,7 @@ func (sl *saveLayout) projectEntity(entity any) ([]any, Key, error) {
 
 	var keyValues [9]any
 	if len(sl.primaryIndexes) > len(keyValues) {
-		panic("ormapper: Key supports up to 9 column values")
+		panic("agg: Key supports up to 9 column values")
 	}
 	for j, idx := range sl.primaryIndexes {
 		keyValues[j] = values[idx]
@@ -388,7 +388,7 @@ func (em *entityMapping) injectParentalKey(entity any, parentKey Key) {
 
 func extractKeyFromFields(entity any, fields []*field) Key {
 	if len(fields) > 9 {
-		panic("ormapper: Key supports up to 9 column values")
+		panic("agg: Key supports up to 9 column values")
 	}
 
 	entityValue := reflect.ValueOf(entity).Elem()

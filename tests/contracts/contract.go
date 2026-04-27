@@ -6,13 +6,13 @@ import (
 	"errors"
 	"testing"
 
-	ormapper "github.com/hanpama/ormapper"
+	agg "github.com/hanpama/agg"
 )
 
 type Fixture struct {
 	Name        string
 	DB          *sql.DB
-	Dialect     ormapper.Dialect
+	Dialect     agg.Dialect
 	ResetSchema func(*testing.T, context.Context, *sql.DB)
 	Placeholder func(int) string
 }
@@ -63,19 +63,19 @@ func reset(t *testing.T, f Fixture) context.Context {
 	return ctx
 }
 
-func mapperFor(dialect ormapper.Dialect) *ormapper.Mapper {
-	return ormapper.MustCompile(
+func mapperFor(dialect agg.Dialect) *agg.Mapper {
+	return agg.MustCompile(
 		dialect,
-		ormapper.Map(&simpleAuto{}, ormapper.WithTable("simple_auto")),
-		ormapper.Map(&simpleUUID{}, ormapper.WithTable("simple_uuid")),
-		ormapper.Map(&composite{}, ormapper.WithTable("composite")),
-		ormapper.Map(&specialQuote{}, ormapper.WithTable("special quote")),
-		ormapper.Map(&order{}, ormapper.WithTable("orders")),
-		ormapper.Map(&orderItem{}, ormapper.WithTable("order_items")),
-		ormapper.Map(&orderItemLot{}, ormapper.WithTable("order_item_lots")),
-		ormapper.Map(&orderNote{}, ormapper.WithTable("order_notes")),
-		ormapper.Map(&identifyingRoot{}, ormapper.WithTable("identifying_roots")),
-		ormapper.Map(&identifyingDetail{}, ormapper.WithTable("identifying_details")),
+		agg.Map(&simpleAuto{}, agg.WithTable("simple_auto")),
+		agg.Map(&simpleUUID{}, agg.WithTable("simple_uuid")),
+		agg.Map(&composite{}, agg.WithTable("composite")),
+		agg.Map(&specialQuote{}, agg.WithTable("special quote")),
+		agg.Map(&order{}, agg.WithTable("orders")),
+		agg.Map(&orderItem{}, agg.WithTable("order_items")),
+		agg.Map(&orderItemLot{}, agg.WithTable("order_item_lots")),
+		agg.Map(&orderNote{}, agg.WithTable("order_notes")),
+		agg.Map(&identifyingRoot{}, agg.WithTable("identifying_roots")),
+		agg.Map(&identifyingDetail{}, agg.WithTable("identifying_details")),
 	)
 }
 
@@ -89,7 +89,7 @@ func countRows(t *testing.T, ctx context.Context, db *sql.DB, query string, args
 	return count
 }
 
-func assertMissing[T any](t *testing.T, ctx context.Context, m *ormapper.Mapper, db ormapper.DBTX, id ormapper.Key) {
+func assertMissing[T any](t *testing.T, ctx context.Context, m *agg.Mapper, db agg.DBTX, id agg.Key) {
 	t.Helper()
 
 	var found *T
@@ -126,7 +126,7 @@ func runSimpleAuto(t *testing.T, f Fixture) {
 	}
 
 	var loaded *simpleAuto
-	if err := m.Get(ctx, f.DB, &loaded, ormapper.NewKey(entity.ID)); err != nil {
+	if err := m.Get(ctx, f.DB, &loaded, agg.NewKey(entity.ID)); err != nil {
 		t.Fatalf("Get: %v", err)
 	}
 	if loaded == nil {
@@ -150,7 +150,7 @@ func runSimpleAuto(t *testing.T, f Fixture) {
 		Name:     "stale generated id",
 		Nullable: strPtr("should fail"),
 	}
-	if err := m.Save(ctx, f.DB, stale); !errors.Is(err, ormapper.ErrStaleEntity) {
+	if err := m.Save(ctx, f.DB, stale); !errors.Is(err, agg.ErrStaleEntity) {
 		t.Fatalf("expected stale generated entity error, got %v", err)
 	}
 }
@@ -169,10 +169,10 @@ func runBulkMapper(t *testing.T, f Fixture) {
 	}
 
 	var loaded []*simpleAuto
-	ids := []ormapper.Key{
-		ormapper.NewKey(second.ID),
-		ormapper.NewKey(int64(999999)),
-		ormapper.NewKey(first.ID),
+	ids := []agg.Key{
+		agg.NewKey(second.ID),
+		agg.NewKey(int64(999999)),
+		agg.NewKey(first.ID),
 	}
 	if err := m.GetMany(ctx, f.DB, &loaded, ids); err != nil {
 		t.Fatalf("GetMany: %v", err)
@@ -197,7 +197,7 @@ func runBulkMapper(t *testing.T, f Fixture) {
 	}
 
 	loaded = nil
-	if err := m.GetMany(ctx, f.DB, &loaded, []ormapper.Key{ormapper.NewKey(first.ID), ormapper.NewKey(second.ID)}); err != nil {
+	if err := m.GetMany(ctx, f.DB, &loaded, []agg.Key{agg.NewKey(first.ID), agg.NewKey(second.ID)}); err != nil {
 		t.Fatalf("GetMany after update: %v", err)
 	}
 	if loaded[0] == nil || loaded[0].Name != "bulk-first-updated" {
@@ -273,7 +273,7 @@ func runSimpleUUID(t *testing.T, f Fixture) {
 	}
 
 	var loaded *simpleUUID
-	if err := m.Get(ctx, f.DB, &loaded, ormapper.NewKey(entity.ID)); err != nil {
+	if err := m.Get(ctx, f.DB, &loaded, agg.NewKey(entity.ID)); err != nil {
 		t.Fatalf("Get explicit key: %v", err)
 	}
 	if loaded == nil || loaded.Name != "uuid-updated" || loaded.Nullable != nil {
@@ -304,7 +304,7 @@ func runComposite(t *testing.T, f Fixture) {
 	}
 
 	var loaded *composite
-	if err := m.Get(ctx, f.DB, &loaded, ormapper.NewKey(entity.Key1, entity.Key2)); err != nil {
+	if err := m.Get(ctx, f.DB, &loaded, agg.NewKey(entity.Key1, entity.Key2)); err != nil {
 		t.Fatalf("Get composite: %v", err)
 	}
 	if loaded == nil || loaded.Name != "composite-updated" {
@@ -317,7 +317,7 @@ func runComposite(t *testing.T, f Fixture) {
 	if err := m.Delete(ctx, f.DB, entity); err != nil {
 		t.Fatalf("Delete composite: %v", err)
 	}
-	assertMissing[composite](t, ctx, m, f.DB, ormapper.NewKey(entity.Key1, entity.Key2))
+	assertMissing[composite](t, ctx, m, f.DB, agg.NewKey(entity.Key1, entity.Key2))
 }
 
 func runSpecialQuote(t *testing.T, f Fixture) {
@@ -330,7 +330,7 @@ func runSpecialQuote(t *testing.T, f Fixture) {
 	}
 
 	var loaded *specialQuote
-	if err := m.Get(ctx, f.DB, &loaded, ormapper.NewKey(entity.ID)); err != nil {
+	if err := m.Get(ctx, f.DB, &loaded, agg.NewKey(entity.ID)); err != nil {
 		t.Fatalf("Get special quote: %v", err)
 	}
 	if loaded == nil || loaded.Name != "quoted" {
@@ -385,7 +385,7 @@ func runAggregateSave(t *testing.T, f Fixture) {
 	}
 
 	var loaded *order
-	if err := m.Get(ctx, f.DB, &loaded, ormapper.NewKey(root.ID)); err != nil {
+	if err := m.Get(ctx, f.DB, &loaded, agg.NewKey(root.ID)); err != nil {
 		t.Fatalf("Get aggregate: %v", err)
 	}
 	if loaded == nil || loaded.Total != 125 || loaded.Note == nil || loaded.Note.Body != "updated note" {
@@ -451,7 +451,7 @@ func runGeneratedChildMustExistUnderParent(t *testing.T, f Fixture) {
 
 	moved := source.Items[0]
 	target.Items = []*orderItem{moved}
-	if err := m.Save(ctx, f.DB, target); !errors.Is(err, ormapper.ErrStaleEntity) {
+	if err := m.Save(ctx, f.DB, target); !errors.Is(err, agg.ErrStaleEntity) {
 		t.Fatalf("expected stale generated child error, got %v", err)
 	}
 
@@ -476,7 +476,7 @@ func runDuplicateSubmittedChildKeyFails(t *testing.T, f Fixture) {
 
 	item := root.Items[0]
 	root.Items = []*orderItem{item, item}
-	if err := m.Save(ctx, f.DB, root); !errors.Is(err, ormapper.ErrConsistency) {
+	if err := m.Save(ctx, f.DB, root); !errors.Is(err, agg.ErrConsistency) {
 		t.Fatalf("expected duplicate submitted child key consistency error, got %v", err)
 	}
 }
@@ -526,7 +526,7 @@ func runDeleteAggregate(t *testing.T, f Fixture) {
 		t.Fatalf("Delete aggregate: %v", err)
 	}
 
-	assertMissing[order](t, ctx, m, f.DB, ormapper.NewKey(root.ID))
+	assertMissing[order](t, ctx, m, f.DB, agg.NewKey(root.ID))
 	for _, table := range []string{"order_items", "order_item_lots", "order_notes"} {
 		if countRows(t, ctx, f.DB, "SELECT COUNT(*) FROM "+table) != 0 {
 			t.Fatalf("expected %s rows to be deleted", table)
@@ -655,7 +655,7 @@ func runAggregateSQLFlow(t *testing.T, f Fixture) {
 		got, err := trace.capture(func() error {
 			return m.Save(ctx, trace, root)
 		})
-		if !errors.Is(err, ormapper.ErrStaleEntity) {
+		if !errors.Is(err, agg.ErrStaleEntity) {
 			t.Fatalf("expected stale generated root error, got %v", err)
 		}
 		assertSQLFlow(t, got, []string{
@@ -725,8 +725,8 @@ func runQueryFetchAndFilter(t *testing.T, f Fixture) {
 	m := mapperFor(f.Dialect)
 	seedOrders(t, ctx, m, f.DB)
 
-	all, err := ormapper.NewQuery[order](m, f.DB, "o").
-		OrderBy(ormapper.NewQuery[order](m, f.DB, "o").Asc("o.total")).
+	all, err := agg.NewQuery[order](m, f.DB, "o").
+		OrderBy(agg.NewQuery[order](m, f.DB, "o").Asc("o.total")).
 		FetchAll(ctx)
 	if err != nil {
 		t.Fatalf("FetchAll: %v", err)
@@ -735,7 +735,7 @@ func runQueryFetchAndFilter(t *testing.T, f Fixture) {
 		t.Fatalf("expected 3 orders, got %d", len(all))
 	}
 
-	found, err := ormapper.NewQuery[order](m, f.DB, "o").
+	found, err := agg.NewQuery[order](m, f.DB, "o").
 		Where("o.customer_id = ?", int64(42)).
 		FetchOne(ctx)
 	if err != nil {
@@ -745,7 +745,7 @@ func runQueryFetchAndFilter(t *testing.T, f Fixture) {
 		t.Fatalf("expected aggregate children to load in query result, got %#v", found)
 	}
 
-	missing, err := ormapper.NewQuery[order](m, f.DB, "o").
+	missing, err := agg.NewQuery[order](m, f.DB, "o").
 		Where("o.customer_id = ?", int64(999)).
 		FetchOne(ctx)
 	if err != nil {
@@ -755,8 +755,8 @@ func runQueryFetchAndFilter(t *testing.T, f Fixture) {
 		t.Fatalf("expected missing query result to be nil, got %#v", missing)
 	}
 
-	page, err := ormapper.NewQuery[order](m, f.DB, "o").
-		OrderBy(ormapper.NewQuery[order](m, f.DB, "o").Desc("o.total")).
+	page, err := agg.NewQuery[order](m, f.DB, "o").
+		OrderBy(agg.NewQuery[order](m, f.DB, "o").Desc("o.total")).
 		Offset(1).
 		FetchMany(ctx, 1)
 	if err != nil {
@@ -772,7 +772,7 @@ func runQueryJoinGroupHavingCount(t *testing.T, f Fixture) {
 	m := mapperFor(f.Dialect)
 	seedOrders(t, ctx, m, f.DB)
 
-	count, err := ormapper.NewQuery[order](m, f.DB, "o").
+	count, err := agg.NewQuery[order](m, f.DB, "o").
 		Join("order_items", "oi", "o.id = oi.order_id").
 		GroupByPrimaryKey().
 		Having("COUNT(oi.id) >= ?", 2).
@@ -784,7 +784,7 @@ func runQueryJoinGroupHavingCount(t *testing.T, f Fixture) {
 		t.Fatalf("expected 2 orders with at least 2 items, got %d", count)
 	}
 
-	withNoMatch, err := ormapper.NewQuery[order](m, f.DB, "o").
+	withNoMatch, err := agg.NewQuery[order](m, f.DB, "o").
 		LeftJoin("order_items", "oi", "o.id = oi.order_id AND oi.name = ?", "does-not-exist").
 		Where("oi.id IS NULL").
 		FetchAll(ctx)
@@ -796,7 +796,7 @@ func runQueryJoinGroupHavingCount(t *testing.T, f Fixture) {
 	}
 }
 
-func seedOrders(t *testing.T, ctx context.Context, m *ormapper.Mapper, db *sql.DB) []*order {
+func seedOrders(t *testing.T, ctx context.Context, m *agg.Mapper, db *sql.DB) []*order {
 	t.Helper()
 
 	orders := []*order{
@@ -831,7 +831,7 @@ func runTransactionCommitVisible(t *testing.T, f Fixture) {
 	}
 
 	var loaded *simpleAuto
-	if err := m.Get(ctx, f.DB, &loaded, ormapper.NewKey(entity.ID)); err != nil {
+	if err := m.Get(ctx, f.DB, &loaded, agg.NewKey(entity.ID)); err != nil {
 		t.Fatalf("Get after commit: %v", err)
 	}
 	if loaded == nil || loaded.Name != "committed" {
@@ -854,7 +854,7 @@ func runTransactionRollbackInvisible(t *testing.T, f Fixture) {
 		t.Fatalf("Save in tx: %v", err)
 	}
 	var insideTx *simpleAuto
-	if err := m.Get(ctx, tx, &insideTx, ormapper.NewKey(entity.ID)); err != nil {
+	if err := m.Get(ctx, tx, &insideTx, agg.NewKey(entity.ID)); err != nil {
 		_ = tx.Rollback()
 		t.Fatalf("Get inside tx: %v", err)
 	}
@@ -866,7 +866,7 @@ func runTransactionRollbackInvisible(t *testing.T, f Fixture) {
 		t.Fatalf("Rollback: %v", err)
 	}
 
-	assertMissing[simpleAuto](t, ctx, m, f.DB, ormapper.NewKey(entity.ID))
+	assertMissing[simpleAuto](t, ctx, m, f.DB, agg.NewKey(entity.ID))
 }
 
 func runValidation(t *testing.T, f Fixture) {
@@ -875,20 +875,20 @@ func runValidation(t *testing.T, f Fixture) {
 
 	t.Run("GetDest", func(t *testing.T) {
 		var entity *simpleAuto
-		if err := m.Get(ctx, f.DB, entity, ormapper.NewKey(int64(1))); err == nil {
+		if err := m.Get(ctx, f.DB, entity, agg.NewKey(int64(1))); err == nil {
 			t.Fatal("expected error for non-pointer dest")
 		}
-		if err := m.Get(ctx, f.DB, &[]*simpleAuto{}, ormapper.NewKey(int64(1))); err == nil {
+		if err := m.Get(ctx, f.DB, &[]*simpleAuto{}, agg.NewKey(int64(1))); err == nil {
 			t.Fatal("expected error for non entity-pointer dest")
 		}
 	})
 
 	t.Run("GetManyDest", func(t *testing.T) {
 		var entities []*simpleAuto
-		if err := m.GetMany(ctx, f.DB, entities, []ormapper.Key{ormapper.NewKey(int64(1))}); err == nil {
+		if err := m.GetMany(ctx, f.DB, entities, []agg.Key{agg.NewKey(int64(1))}); err == nil {
 			t.Fatal("expected error for non-pointer dest")
 		}
-		if err := m.GetMany(ctx, f.DB, &[]simpleAuto{}, []ormapper.Key{ormapper.NewKey(int64(1))}); err == nil {
+		if err := m.GetMany(ctx, f.DB, &[]simpleAuto{}, []agg.Key{agg.NewKey(int64(1))}); err == nil {
 			t.Fatal("expected error for non entity-pointer slice dest")
 		}
 	})
@@ -945,26 +945,26 @@ func runValidation(t *testing.T, f Fixture) {
 			t.Fatal("expected error for unmapped save type")
 		}
 		var loaded *unmapped
-		if err := m.Get(ctx, f.DB, &loaded, ormapper.NewKey(int64(1))); err == nil {
+		if err := m.Get(ctx, f.DB, &loaded, agg.NewKey(int64(1))); err == nil {
 			t.Fatal("expected error for unmapped get type")
 		}
 	})
 
 	t.Run("KeyLengthMismatch", func(t *testing.T) {
 		var loaded *simpleAuto
-		if err := m.Get(ctx, f.DB, &loaded, ormapper.NewKey(int64(1), int64(2))); err == nil {
+		if err := m.Get(ctx, f.DB, &loaded, agg.NewKey(int64(1), int64(2))); err == nil {
 			t.Fatal("expected key length mismatch error")
 		}
 	})
 
 	t.Run("CompileInvalidMapping", func(t *testing.T) {
-		if _, err := ormapper.Compile(f.Dialect, ormapper.Map(nil)); err == nil {
+		if _, err := agg.Compile(f.Dialect, agg.Map(nil)); err == nil {
 			t.Fatal("expected nil mapping entity error")
 		}
-		if _, err := ormapper.Compile(f.Dialect, ormapper.Map(simpleAuto{})); err == nil {
+		if _, err := agg.Compile(f.Dialect, agg.Map(simpleAuto{})); err == nil {
 			t.Fatal("expected non-pointer mapping entity error")
 		}
-		if _, err := ormapper.Compile(f.Dialect, ormapper.Map(new(int))); err == nil {
+		if _, err := agg.Compile(f.Dialect, agg.Map(new(int))); err == nil {
 			t.Fatal("expected non-struct mapping entity error")
 		}
 	})

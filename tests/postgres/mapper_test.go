@@ -8,15 +8,15 @@ import (
 	"testing"
 	"time"
 
-	ormapper "github.com/hanpama/ormapper"
-	"github.com/hanpama/ormapper/tests/contracts"
+	agg "github.com/hanpama/agg"
+	"github.com/hanpama/agg/tests/contracts"
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
 func TestPostgresContracts(t *testing.T) {
 	dsn := os.Getenv("ORMAPPER_POSTGRES_DSN")
 	if dsn == "" {
-		dsn = "postgres://ormapper:ormapper@localhost:17432/ormapper?sslmode=disable"
+		dsn = "postgres://agg:agg@localhost:17432/agg?sslmode=disable"
 	}
 
 	db, err := sql.Open("pgx", dsn)
@@ -38,7 +38,7 @@ func TestPostgresContracts(t *testing.T) {
 	contracts.Run(t, contracts.Fixture{
 		Name:        "postgres",
 		DB:          db,
-		Dialect:     ormapper.Postgres,
+		Dialect:     agg.Postgres,
 		ResetSchema: resetPostgresSchema,
 		Placeholder: func(n int) string {
 			return fmt.Sprintf("$%d", n)

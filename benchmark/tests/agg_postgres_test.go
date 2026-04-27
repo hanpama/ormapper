@@ -4,14 +4,14 @@ import (
 	"context"
 	"testing"
 
-	ormapper "github.com/hanpama/ormapper"
-	"github.com/hanpama/ormapper/benchmark/shared"
+	agg "github.com/hanpama/agg"
+	"github.com/hanpama/agg/benchmark/shared"
 )
 
 func BenchmarkOrmapper_Postgres_Simple_Insert(b *testing.B) {
 	db, cleanup := setupPostgresDB(b)
 	defer cleanup()
-	mapper := ormapper.MustCompile(ormapper.Postgres, ormapper.Map(&shared.User{}, ormapper.WithTable("users")))
+	mapper := agg.MustCompile(agg.Postgres, agg.Map(&shared.User{}, agg.WithTable("users")))
 	ctx := context.Background()
 
 	b.ResetTimer()
@@ -27,7 +27,7 @@ func BenchmarkOrmapper_Postgres_Simple_Insert(b *testing.B) {
 func BenchmarkOrmapper_Postgres_Simple_Select(b *testing.B) {
 	db, cleanup := setupPostgresDB(b)
 	defer cleanup()
-	mapper := ormapper.MustCompile(ormapper.Postgres, ormapper.Map(&shared.User{}, ormapper.WithTable("users")))
+	mapper := agg.MustCompile(agg.Postgres, agg.Map(&shared.User{}, agg.WithTable("users")))
 	ctx := context.Background()
 	ids := seedUsers(b, ctx, db, 100)
 
@@ -36,7 +36,7 @@ func BenchmarkOrmapper_Postgres_Simple_Select(b *testing.B) {
 
 	for i := 0; i < b.N; i++ {
 		var user *shared.User
-		if err := mapper.Get(ctx, db, &user, ormapper.NewKey(ids[i%len(ids)])); err != nil {
+		if err := mapper.Get(ctx, db, &user, agg.NewKey(ids[i%len(ids)])); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -45,7 +45,7 @@ func BenchmarkOrmapper_Postgres_Simple_Select(b *testing.B) {
 func BenchmarkOrmapper_Postgres_Simple_Update(b *testing.B) {
 	db, cleanup := setupPostgresDB(b)
 	defer cleanup()
-	mapper := ormapper.MustCompile(ormapper.Postgres, ormapper.Map(&shared.User{}, ormapper.WithTable("users")))
+	mapper := agg.MustCompile(agg.Postgres, agg.Map(&shared.User{}, agg.WithTable("users")))
 	ctx := context.Background()
 	ids := seedUsers(b, ctx, db, 100)
 
@@ -54,7 +54,7 @@ func BenchmarkOrmapper_Postgres_Simple_Update(b *testing.B) {
 
 	for i := 0; i < b.N; i++ {
 		var user *shared.User
-		if err := mapper.Get(ctx, db, &user, ormapper.NewKey(ids[i%len(ids)])); err != nil {
+		if err := mapper.Get(ctx, db, &user, agg.NewKey(ids[i%len(ids)])); err != nil {
 			b.Fatal(err)
 		}
 		user.Age = 30
@@ -67,7 +67,7 @@ func BenchmarkOrmapper_Postgres_Simple_Update(b *testing.B) {
 func BenchmarkOrmapper_Postgres_Simple_ReadSlice(b *testing.B) {
 	db, cleanup := setupPostgresDB(b)
 	defer cleanup()
-	mapper := ormapper.MustCompile(ormapper.Postgres, ormapper.Map(&shared.User{}, ormapper.WithTable("users")))
+	mapper := agg.MustCompile(agg.Postgres, agg.Map(&shared.User{}, agg.WithTable("users")))
 	ctx := context.Background()
 	_ = seedUsers(b, ctx, db, 100)
 
@@ -75,7 +75,7 @@ func BenchmarkOrmapper_Postgres_Simple_ReadSlice(b *testing.B) {
 	b.ReportAllocs()
 
 	for i := 0; i < b.N; i++ {
-		users, err := ormapper.NewQuery[shared.User](mapper, db, "u").
+		users, err := agg.NewQuery[shared.User](mapper, db, "u").
 			Where("u.id > ?", 0).
 			FetchMany(ctx, 100)
 		if err != nil {
@@ -90,7 +90,7 @@ func BenchmarkOrmapper_Postgres_Simple_ReadSlice(b *testing.B) {
 func BenchmarkOrmapper_Postgres_Simple_Delete(b *testing.B) {
 	db, cleanup := setupPostgresDB(b)
 	defer cleanup()
-	mapper := ormapper.MustCompile(ormapper.Postgres, ormapper.Map(&shared.User{}, ormapper.WithTable("users")))
+	mapper := agg.MustCompile(agg.Postgres, agg.Map(&shared.User{}, agg.WithTable("users")))
 	ctx := context.Background()
 
 	b.ResetTimer()
@@ -146,7 +146,7 @@ func BenchmarkOrmapper_Postgres_Aggregate_Select(b *testing.B) {
 
 	for i := 0; i < b.N; i++ {
 		var order *shared.Order
-		if err := mapper.Get(ctx, db, &order, ormapper.NewKey(ids[i%len(ids)])); err != nil {
+		if err := mapper.Get(ctx, db, &order, agg.NewKey(ids[i%len(ids)])); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -168,7 +168,7 @@ func BenchmarkOrmapper_Postgres_Aggregate_Update(b *testing.B) {
 			b.Fatal(err)
 		}
 		var order *shared.Order
-		if err := mapper.Get(ctx, tx, &order, ormapper.NewKey(ids[i%len(ids)])); err != nil {
+		if err := mapper.Get(ctx, tx, &order, agg.NewKey(ids[i%len(ids)])); err != nil {
 			_ = tx.Rollback()
 			b.Fatal(err)
 		}
@@ -194,7 +194,7 @@ func BenchmarkOrmapper_Postgres_Aggregate_ReadSlice(b *testing.B) {
 	b.ReportAllocs()
 
 	for i := 0; i < b.N; i++ {
-		orders, err := ormapper.NewQuery[shared.Order](mapper, db, "o").
+		orders, err := agg.NewQuery[shared.Order](mapper, db, "o").
 			Where("o.id > ?", 0).
 			FetchMany(ctx, 100)
 		if err != nil {
@@ -237,11 +237,11 @@ func BenchmarkOrmapper_Postgres_Aggregate_Delete(b *testing.B) {
 	}
 }
 
-func aggregateMapper() *ormapper.Mapper {
-	return ormapper.MustCompile(
-		ormapper.Postgres,
-		ormapper.Map(&shared.Order{}, ormapper.WithTable("orders")),
-		ormapper.Map(&shared.OrderItem{}, ormapper.WithTable("order_items")),
-		ormapper.Map(&shared.OrderNote{}, ormapper.WithTable("order_notes")),
+func aggregateMapper() *agg.Mapper {
+	return agg.MustCompile(
+		agg.Postgres,
+		agg.Map(&shared.Order{}, agg.WithTable("orders")),
+		agg.Map(&shared.OrderItem{}, agg.WithTable("order_items")),
+		agg.Map(&shared.OrderNote{}, agg.WithTable("order_notes")),
 	)
 }
