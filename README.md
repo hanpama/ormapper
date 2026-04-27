@@ -1,6 +1,6 @@
-# ormapper
+# agg
 
-`ormapper` persists plain Go aggregate structs with a small API:
+`agg` persists plain Go aggregate structs with a small API:
 
 - compile mappings once at startup
 - pass `context.Context` plus `*sql.DB` or `*sql.Tx` to each operation
@@ -9,32 +9,32 @@
 
 `Save` treats the input value as the authoritative aggregate snapshot. It
 inserts rows with new manual keys, updates rows with existing keys, and deletes
-children missing from the input value. For `ormapper:"auto"` primary keys, zero
+children missing from the input value. For `agg:"auto"` primary keys, zero
 means insert and non-zero means update; a non-zero generated key missing from the
 database is a stale entity error.
 
 ```go
 type Order struct {
-	ID    int64 `ormapper:"auto"`
+	ID    int64 `agg:"auto"`
 	Total int64
 	Items []*OrderItem
 }
 
 type OrderItem struct {
-	ID      int64 `ormapper:"auto"`
-	OrderID int64 `ormapper:"parental"`
+	ID      int64 `agg:"auto"`
+	OrderID int64 `agg:"parental"`
 	Name    string
 	Qty     int
 }
 
-mapper := ormapper.MustCompile(
-	ormapper.Postgres,
-	ormapper.Map(&Order{}, ormapper.WithTable("orders")),
-	ormapper.Map(&OrderItem{}, ormapper.WithTable("order_items")),
+mapper := agg.MustCompile(
+	agg.Postgres,
+	agg.Map(&Order{}, agg.WithTable("orders")),
+	agg.Map(&OrderItem{}, agg.WithTable("order_items")),
 )
 
 var order *Order
-if err := mapper.Get(ctx, tx, &order, ormapper.NewKey(id)); err != nil {
+if err := mapper.Get(ctx, tx, &order, agg.NewKey(id)); err != nil {
 	return err
 }
 

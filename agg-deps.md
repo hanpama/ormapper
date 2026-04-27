@@ -1,4 +1,4 @@
-# ormapper — File Dependency Analysis
+# agg — File Dependency Analysis
 
 This report tracks the intended source-file layering after the persistence
 semantic refactor. The important check is that backend contracts no longer point

@@ -1,6 +1,6 @@
-# ormapper benchmarks
+# agg benchmarks
 
-This module keeps benchmark-only dependencies out of the root `ormapper` module.
+This module keeps benchmark-only dependencies out of the root `agg` module.
 
 Run PostgreSQL first:
 
@@ -31,7 +31,7 @@ Override it with `ORMAPPER_BENCH_POSTGRES_DSN`.
 ## Structure
 
 - `shared`: benchmark entities, fixture data, and schema helpers.
-- `tests/ormapper_postgres_test.go`: ormapper subject benchmarks.
+- `tests/agg_postgres_test.go`: agg subject benchmarks.
 - `tests/raw_postgres_test.go`: raw SQL baseline benchmarks.
 
 Additional comparison libraries should be added as separate files under

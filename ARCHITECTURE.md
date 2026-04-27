@@ -1,4 +1,4 @@
-# ormapper Architecture
+# agg Architecture
 
 이 문서는 현재 구현을 밀어갈 기준이다. 목표는 `../orm1`의 기능을 얇게 복제하는 것이 아니라, 인메모리 세션/identity map/dirty tracking 없이도 엔티티 그래프를 명확한 의미로 영속하는 경량 라이브러리를 만드는 것이다.
 
@@ -45,7 +45,7 @@ manual PK의 zero 값은 결측으로 해석하지 않는다.
 
 ### 2.2 Auto Fields
 
-`ormapper:"auto"` field는 insert input에서 제외된다.
+`agg:"auto"` field는 insert input에서 제외된다.
 
 - auto PK zero: insert 후 `RETURNING`으로 값을 backfill한다.
 - auto PK non-zero: update 대상 key로 사용한다.
@@ -67,9 +67,9 @@ Stateless라고 해서 consistency를 숨기지 않는다.
 권장 오류 이름:
 
 ```go
-var ErrConsistency = errors.New("ormapper consistency error")
-var ErrStaleEntity = errors.New("ormapper stale entity")
-var ErrUnsupportedSemantic = errors.New("ormapper unsupported semantic")
+var ErrConsistency = errors.New("agg consistency error")
+var ErrStaleEntity = errors.New("agg stale entity")
+var ErrUnsupportedSemantic = errors.New("agg unsupported semantic")
 ```
 
 구체 오류는 wrapping한다.
