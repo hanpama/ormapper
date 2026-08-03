@@ -9,6 +9,11 @@ import (
 	"strconv"
 )
 
+// SQLite renders SQLite SQL.
+var SQLite Dialect = sqliteDialect{}
+
+// --- Buffered rows ---
+
 type bufferedRows struct {
 	data   [][]any
 	cursor int
@@ -96,6 +101,8 @@ func int64FromDB(value any) (int64, error) {
 		return 0, fmt.Errorf("expected integer value, got %T", value)
 	}
 }
+
+// --- Backend ---
 
 type sqliteDialect struct{}
 
@@ -193,6 +200,8 @@ func (b *sqliteBackend) hasSQLiteSequence(ctx context.Context) (bool, error) {
 	b.sqliteSequenceAvailable = exists != 0
 	return b.sqliteSequenceAvailable, nil
 }
+
+// --- SQL rendering ---
 
 func (b *sqliteBackend) renderSQL(sql sqlNode, args *[]any) {
 	switch v := sql.(type) {
@@ -436,9 +445,9 @@ func (b *sqliteBackend) renderGeneratedInsertRows(op insertOp, useSQLiteSequence
 		b.writeByte('(')
 		b.writeString(strconv.Itoa(idx))
 		values := make([]any, len(op.insertIndexes))
-			for j, idx := range op.insertIndexes {
-				values[j] = planned.values[idx]
-			}
+		for j, idx := range op.insertIndexes {
+			values[j] = planned.values[idx]
+		}
 		for _, val := range values {
 			b.writeString(", ")
 			b.writeByte('?')
@@ -536,9 +545,9 @@ func (b *sqliteBackend) renderInsertRows(op insertOp) (string, []any) {
 		}
 		b.writeByte('(')
 		values := make([]any, len(op.insertIndexes))
-			for j, idx := range op.insertIndexes {
-				values[j] = planned.values[idx]
-			}
+		for j, idx := range op.insertIndexes {
+			values[j] = planned.values[idx]
+		}
 		for j, val := range values {
 			if j > 0 {
 				b.writeString(", ")
@@ -694,6 +703,8 @@ func (b *sqliteBackend) renderDelete(stmt deleteRowsOp, keys []Key) (string, []a
 
 	return b.sqlString(), b.argsBuffer
 }
+
+// --- Backend operations ---
 
 func (b *sqliteBackend) LoadRows(ctx context.Context, op loadRowsOp) (rows, error) {
 	query, args := b.renderSelect(op, op.keys)

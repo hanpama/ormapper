@@ -269,13 +269,9 @@ Dialect는 SQL operation plan만 받는다. Dialect가 entity field, child relat
 ```go
 type backend interface {
     LoadRows(ctx context.Context, op loadRowsOp) (rows, error)
-    SelectExistingKeys(ctx context.Context, op keyScanOp) ([]Key, error)
-
-    InsertRows(ctx context.Context, op saveRowsOp, rows []plannedRow) ([]savedRow, error)
-    UpdateRows(ctx context.Context, op saveRowsOp, rows []plannedRow) ([]savedRow, error)
-
+    InsertRows(ctx context.Context, op insertOp) (rows, error)
+    UpdateRows(ctx context.Context, op updateOp) (rows, error)
     DeleteRowsByKeys(ctx context.Context, op deleteRowsOp) error
-
     FetchQuery(ctx context.Context, stmt sqlQuery) (rows, error)
     CountQuery(ctx context.Context, stmt sqlQuery) (int64, error)
 }
@@ -573,44 +569,35 @@ Leaf shortcut is intentionally absent.
 
 ## 10. Source Layout
 
-File structure must expose the same boundary as the runtime architecture.
+The copy-vendoring distribution has one database-neutral core and optional
+database backends. Section boundaries inside `lib.go` expose the same boundaries
+as the runtime architecture.
 
 ```text
-package.go
-  Package documentation and built-in dialect entry points.
-  This is the only central file that mentions both PostgreSQL and SQLite.
-
-backend.go
-  DBTX, Dialect, rows, backend interface, and backend operation DTOs.
-  This file must not depend on concrete engines and must not contain execution helpers.
+lib.go
+  Package documentation and MIT license.
+  Public contracts and errors.
+  Keys.
+  Mapping compilation.
+  Mapper and Query public APIs.
+  Compiled mapping plans.
+  Stateless persistence orchestration.
+  Backend contract and operation DTOs.
+  SQL representation and parser.
 
 postgres.go / sqlite.go
-  Concrete dialect type, backend construction, SQL rendering, execution.
-
-mapper.go
-  Public aggregate API only. It validates input and delegates execution.
-
-persistence.go
-  Stateless graph save/load/delete orchestration.
-  It receives mappingRegistry and backend, not Mapper.
-
-mapping.go / registry.go
-  Compiled entity execution plans, key extraction, and lookup.
-
-save_rows.go
-  Backend save execution support: split planned rows, project insert values, and correlate returned rows by planner-provided keys.
-
-row_scan.go
-  Empty rows plus raw row scan, normalization, and DB value coercion helpers.
+  Public dialect value, concrete backend construction, SQL rendering, execution.
 ```
 
-Important dependency rules:
+Important section and dependency rules:
 
-- Compile subroutines that only serve `Compile` stay in `compile.go` below the public compile API.
-- `backend.go` never imports or references `postgres.go` or `sqlite.go`.
-- `backend.go` declares contract types only; execution helpers stay outside it.
-- `persistence.go` never depends on `Mapper`.
-- `mapping.go` never depends on persistence helpers.
+- `lib.go` never references concrete PostgreSQL or SQLite types.
+- `Postgres` and `SQLite` are declared in their corresponding backend files so
+  either backend can be copied independently.
+- Within each `lib.go` section, the public entry type comes first, receiver
+  methods stay with their type, and private helpers follow call flow.
+- The persistence section receives `mappingRegistry` and `backend`, not `Mapper`.
+- The compiled-mapping section never depends on persistence helpers.
 - backend operation plans must not carry entity field or child relation metadata.
-- relation graph helpers stay inside `persistence.go`; no separate cross-referencing `save_graph.go`.
-- key extraction belongs inside `mapping.go`, not a separate generic `extract.go`.
+- relation graph helpers stay inside the persistence section.
+- key extraction stays adjacent to compiled mapping plans.

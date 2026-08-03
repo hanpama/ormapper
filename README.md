@@ -44,6 +44,20 @@ if err := mapper.Save(ctx, tx, order); err != nil {
 }
 ```
 
+## Copy vendoring
+
+The database-neutral library is contained in `lib.go`. Copy it together with
+the backend for the database you use, keeping both files in the same directory
+and Go package:
+
+| Database | Files to copy |
+|---|---|
+| PostgreSQL | `lib.go`, `postgres.go` |
+| SQLite | `lib.go`, `sqlite.go` |
+
+The root package and both backends depend only on the Go standard library. The
+application continues to choose and import its own `database/sql` driver.
+
 ## Tests
 
 The root module has no database driver dependency.

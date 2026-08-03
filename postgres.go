@@ -7,6 +7,11 @@ import (
 	"strconv"
 )
 
+// Postgres renders PostgreSQL SQL.
+var Postgres Dialect = postgresDialect{}
+
+// --- Backend ---
+
 type postgresDialect struct{}
 
 func (postgresDialect) newBackend(db DBTX) backend { return newPostgreSQLBackend(db) }
@@ -117,6 +122,8 @@ func (b *postgreSQLBackend) execContext(ctx context.Context, query string, args 
 func (b *postgreSQLBackend) queryRowContext(ctx context.Context, query string, args ...any) *sql.Row {
 	return b.db.QueryRowContext(ctx, query, args...)
 }
+
+// --- SQL rendering ---
 
 func (b *postgreSQLBackend) renderSQL(sql sqlNode, args *[]any) {
 	switch v := sql.(type) {
@@ -371,9 +378,9 @@ func (b *postgreSQLBackend) renderGeneratedInsertRows(op insertOp) (string, []an
 		b.writeByte('(')
 		b.writeString(strconv.Itoa(idx))
 		values := make([]any, len(op.insertIndexes))
-			for j, idx := range op.insertIndexes {
-				values[j] = planned.values[idx]
-			}
+		for j, idx := range op.insertIndexes {
+			values[j] = planned.values[idx]
+		}
 		for j, val := range values {
 			b.writeString(", ")
 			b.paramIndex++
@@ -489,9 +496,9 @@ func (b *postgreSQLBackend) renderInsertRows(op insertOp) (string, []any) {
 		b.writeByte('(')
 		b.writeString(strconv.Itoa(idx))
 		values := make([]any, len(op.insertIndexes))
-			for j, idx := range op.insertIndexes {
-				values[j] = planned.values[idx]
-			}
+		for j, idx := range op.insertIndexes {
+			values[j] = planned.values[idx]
+		}
 		for j, val := range values {
 			b.writeString(", ")
 			b.paramIndex++
@@ -740,6 +747,8 @@ func (b *postgreSQLBackend) renderDelete(stmt deleteRowsOp, keys []Key) (string,
 
 	return b.sqlString(), b.argsBuffer
 }
+
+// --- Backend operations ---
 
 func (b *postgreSQLBackend) LoadRows(ctx context.Context, op loadRowsOp) (rows, error) {
 	query, args := b.renderSelect(op, op.keys)
