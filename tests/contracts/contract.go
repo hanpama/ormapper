@@ -30,6 +30,8 @@ func Run(t *testing.T, f Fixture) {
 		t.Run("AggregateSave", func(t *testing.T) { runAggregateSave(t, f) })
 		t.Run("GeneratedChildMustExistUnderParent", func(t *testing.T) { runGeneratedChildMustExistUnderParent(t, f) })
 		t.Run("DuplicateSubmittedChildKeyFails", func(t *testing.T) { runDuplicateSubmittedChildKeyFails(t, f) })
+		t.Run("NilChildFails", func(t *testing.T) { runNilChildFails(t, f) })
+		t.Run("SingularChildCardinalityFails", func(t *testing.T) { runSingularChildCardinalityFails(t, f) })
 		t.Run("SingularChildNilDeletes", func(t *testing.T) { runSingularChildNilDeletes(t, f) })
 		t.Run("IdentifyingChild", func(t *testing.T) { runIdentifyingChild(t, f) })
 		t.Run("DeleteAggregate", func(t *testing.T) { runDeleteAggregate(t, f) })
@@ -481,6 +483,52 @@ func runDuplicateSubmittedChildKeyFails(t *testing.T, f Fixture) {
 	}
 }
 
+func runNilChildFails(t *testing.T, f Fixture) {
+	ctx := reset(t, f)
+	m := mapperFor(f.Dialect)
+	tx, err := f.DB.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("BeginTx: %v", err)
+	}
+
+	root := &order{
+		CustomerID: 40,
+		Total:      40,
+		Items:      []*orderItem{nil},
+	}
+	if err := m.Save(ctx, tx, root); err == nil {
+		_ = tx.Rollback()
+		t.Fatal("expected nil aggregate child error")
+	}
+	if err := tx.Rollback(); err != nil {
+		t.Fatalf("Rollback: %v", err)
+	}
+	if countRows(t, ctx, f.DB, "SELECT COUNT(*) FROM orders") != 0 {
+		t.Fatal("rollback after nil child error should remove the partially saved root")
+	}
+}
+
+func runSingularChildCardinalityFails(t *testing.T, f Fixture) {
+	ctx := reset(t, f)
+	m := mapperFor(f.Dialect)
+	root := &order{CustomerID: 50, Total: 50}
+	if err := m.Save(ctx, f.DB, root); err != nil {
+		t.Fatalf("Save aggregate: %v", err)
+	}
+
+	insert := "INSERT INTO order_notes (order_id, body) VALUES (" +
+		f.Placeholder(1) + ", " + f.Placeholder(2) + "), (" +
+		f.Placeholder(3) + ", " + f.Placeholder(4) + ")"
+	if _, err := f.DB.ExecContext(ctx, insert, root.ID, "first", root.ID, "second"); err != nil {
+		t.Fatalf("insert duplicate singular children: %v", err)
+	}
+
+	var loaded *order
+	if err := m.Get(ctx, f.DB, &loaded, agg.NewKey(root.ID)); !errors.Is(err, agg.ErrConsistency) {
+		t.Fatalf("expected singular child consistency error, got %v", err)
+	}
+}
+
 func runIdentifyingChild(t *testing.T, f Fixture) {
 	ctx := reset(t, f)
 	m := mapperFor(f.Dialect)
@@ -881,6 +929,10 @@ func runValidation(t *testing.T, f Fixture) {
 		if err := m.Get(ctx, f.DB, &[]*simpleAuto{}, agg.NewKey(int64(1))); err == nil {
 			t.Fatal("expected error for non entity-pointer dest")
 		}
+		var dest **simpleAuto
+		if err := m.Get(ctx, f.DB, dest, agg.NewKey(int64(1))); err == nil {
+			t.Fatal("expected error for nil destination pointer")
+		}
 	})
 
 	t.Run("GetManyDest", func(t *testing.T) {
@@ -891,6 +943,10 @@ func runValidation(t *testing.T, f Fixture) {
 		if err := m.GetMany(ctx, f.DB, &[]simpleAuto{}, []agg.Key{agg.NewKey(int64(1))}); err == nil {
 			t.Fatal("expected error for non entity-pointer slice dest")
 		}
+		var dest *[]*simpleAuto
+		if err := m.GetMany(ctx, f.DB, dest, []agg.Key{agg.NewKey(int64(1))}); err == nil {
+			t.Fatal("expected error for nil destination pointer")
+		}
 	})
 
 	t.Run("SaveEntity", func(t *testing.T) {
@@ -900,6 +956,10 @@ func runValidation(t *testing.T, f Fixture) {
 		v := 1
 		if err := m.Save(ctx, f.DB, &v); err == nil {
 			t.Fatal("expected error for pointer to non-struct")
+		}
+		var entity *simpleAuto
+		if err := m.Save(ctx, f.DB, entity); err == nil {
+			t.Fatal("expected error for nil entity pointer")
 		}
 	})
 
@@ -922,6 +982,10 @@ func runValidation(t *testing.T, f Fixture) {
 		v := 1
 		if err := m.Delete(ctx, f.DB, &v); err == nil {
 			t.Fatal("expected error for pointer to non-struct")
+		}
+		var entity *simpleAuto
+		if err := m.Delete(ctx, f.DB, entity); err == nil {
+			t.Fatal("expected error for nil entity pointer")
 		}
 	})
 

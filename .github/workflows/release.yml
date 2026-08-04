@@ -1,0 +1,89 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Test and publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: agg
+          POSTGRES_USER: agg
+          POSTGRES_PASSWORD: agg
+        ports:
+          - 17432:5432
+        options: >-
+          --health-cmd "pg_isready -U agg -d agg"
+          --health-interval 1s
+          --health-timeout 5s
+          --health-retries 30
+    env:
+      AGG_POSTGRES_DSN: postgres://agg:agg@localhost:17432/agg?sslmode=disable
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Validate semantic version tag
+        run: |
+          if [[ ! "$GITHUB_REF_NAME" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
+            echo "release tag must be a semantic version such as v1.0.0" >&2
+            exit 1
+          fi
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.26.x"
+          cache: true
+          cache-dependency-path: |
+            go.mod
+            tests/sqlite/go.sum
+            tests/postgres/go.sum
+      - name: Test root module
+        run: go test ./...
+      - name: Test SQLite contracts
+        working-directory: tests/sqlite
+        run: go test ./...
+      - name: Test PostgreSQL contracts
+        working-directory: tests/postgres
+        run: go test ./...
+      - name: Verify copy-vendored distributions
+        run: |
+          for backend in postgres sqlite; do
+            workdir="$(mktemp -d)"
+            cp lib.go "$backend.go" "$workdir/"
+            (
+              cd "$workdir"
+              go mod init example.com/agg-vendored
+              go test ./...
+            )
+          done
+      - name: Build release assets
+        run: |
+          mkdir dist
+          cp lib.go postgres.go sqlite.go dist/
+          (
+            cd dist
+            sha256sum lib.go postgres.go sqlite.go > SHA256SUMS
+          )
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          release_flags=(--verify-tag --generate-notes)
+          if [[ "$GITHUB_REF_NAME" == *-* ]]; then
+            release_flags+=(--prerelease)
+          fi
+          gh release create "$GITHUB_REF_NAME" "${release_flags[@]}" \
+            dist/lib.go \
+            dist/postgres.go \
+            dist/sqlite.go \
+            dist/SHA256SUMS

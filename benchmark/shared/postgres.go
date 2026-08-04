@@ -9,9 +9,9 @@ import (
 )
 
 func GetPostgresDB() (*sql.DB, error) {
-	dsn := os.Getenv("ORMAPPER_BENCH_POSTGRES_DSN")
+	dsn := os.Getenv("AGG_BENCH_POSTGRES_DSN")
 	if dsn == "" {
-		dsn = "postgres://ormapper:ormapper@localhost:17432/ormapper?sslmode=disable"
+		dsn = "postgres://agg:agg@localhost:17432/agg?sslmode=disable"
 	}
 
 	db, err := sql.Open("pgx", dsn)

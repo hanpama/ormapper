@@ -79,6 +79,55 @@ type invalidGeneratedComposite struct {
 	Name     string
 }
 
+type invalidUnknownTag struct {
+	ID   int64
+	Name string `agg:"primari"`
+}
+
+type invalidEmptyColumn struct {
+	ID   int64
+	Name string `agg:"column:"`
+}
+
+type invalidDuplicateColumns struct {
+	ID    int64
+	First string `agg:"column:value"`
+	Last  string `agg:"column:value"`
+}
+
+type invalidNonComparableKey struct {
+	ID []byte
+}
+
+type invalidWideKey struct {
+	K1  int `agg:"primary"`
+	K2  int `agg:"primary"`
+	K3  int `agg:"primary"`
+	K4  int `agg:"primary"`
+	K5  int `agg:"primary"`
+	K6  int `agg:"primary"`
+	K7  int `agg:"primary"`
+	K8  int `agg:"primary"`
+	K9  int `agg:"primary"`
+	K10 int `agg:"primary"`
+}
+
+type invalidCycleA struct {
+	ID       int64
+	ParentID int64 `agg:"parental"`
+	Children []*invalidCycleB
+}
+
+type invalidCycleB struct {
+	ID       int64
+	ParentID int64 `agg:"parental"`
+	Children []*invalidCycleA
+}
+
+func identityString(value string) (string, error) { return value, nil }
+func intToString(int) (string, error)             { return "", nil }
+func stringToInt(string) (int, error)             { return 0, nil }
+
 func TestToSnakeCase(t *testing.T) {
 	cases := map[string]string{
 		"ID":           "id",
@@ -187,6 +236,44 @@ func TestCompileInvalidMappings(t *testing.T) {
 	}
 	if _, err := Compile(SQLite, Map(&invalidGeneratedComposite{})); err == nil {
 		t.Fatal("expected generated composite primary key error")
+	}
+
+	cases := []struct {
+		name     string
+		mappings []Mapping
+	}{
+		{name: "unknown tag", mappings: []Mapping{Map(&invalidUnknownTag{})}},
+		{name: "empty column", mappings: []Mapping{Map(&invalidEmptyColumn{})}},
+		{name: "duplicate columns", mappings: []Mapping{Map(&invalidDuplicateColumns{})}},
+		{name: "empty table", mappings: []Mapping{Map(&mappingTestComposite{}, WithTable(""))}},
+		{name: "non-comparable key", mappings: []Mapping{Map(&invalidNonComparableKey{})}},
+		{name: "wide key", mappings: []Mapping{Map(&invalidWideKey{})}},
+		{name: "unknown converter field", mappings: []Mapping{Map(&mappingTestComposite{}, WithConverter("Missing", identityString, identityString))}},
+		{name: "key converter", mappings: []Mapping{Map(&mappingTestComposite{}, WithConverter("Key2", identityString, identityString))}},
+		{name: "converter field type", mappings: []Mapping{Map(&mappingTestComposite{}, WithConverter("Name", intToString, stringToInt))}},
+		{name: "duplicate converter", mappings: []Mapping{Map(&mappingTestComposite{},
+			WithConverter("Name", identityString, identityString),
+			WithConverter("Name", identityString, identityString),
+		)}},
+		{name: "zero map option", mappings: []Mapping{Map(&mappingTestComposite{}, MapOption{})}},
+		{name: "child converter", mappings: []Mapping{
+			Map(&mappingTestParent{}, WithConverter("Children", func(v []*mappingTestChild) ([]*mappingTestChild, error) { return v, nil }, func(v []*mappingTestChild) ([]*mappingTestChild, error) { return v, nil })),
+			Map(&mappingTestChild{}),
+		}},
+		{name: "relation cycle", mappings: []Mapping{Map(&invalidCycleA{}), Map(&invalidCycleB{})}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := Compile(SQLite, tc.mappings...); err == nil {
+				t.Fatal("expected compile error")
+			}
+		})
+	}
+
+	var nilConverter func(string) (string, error)
+	if _, err := Compile(SQLite, Map(&mappingTestComposite{}, WithConverter("Name", nilConverter, identityString))); err == nil {
+		t.Fatal("expected nil converter error")
 	}
 }
 

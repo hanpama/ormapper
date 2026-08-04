@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -84,9 +85,14 @@ func addressFromDB(s string) (Address, error) {
 }
 
 type converterEntity struct {
-	ID      int64   `agg:"auto"`
+	ID      int64 `agg:"auto"`
 	Status  Status
 	Address Address
+}
+
+type staleUpdateEntity struct {
+	ID   int64 `agg:"auto"`
+	Name string
 }
 
 func TestConverterEnumRoundTrip(t *testing.T) {
@@ -170,6 +176,37 @@ func TestConverterEnumRoundTrip(t *testing.T) {
 	}
 	if reloaded.Address.City != "Busan" {
 		t.Fatalf("expected Busan, got %s", reloaded.Address.City)
+	}
+}
+
+func TestSQLiteUpdateDetectsDeletedRow(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+
+	exec(t, db, `CREATE TABLE stale_update_entities (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		name TEXT NOT NULL
+	)`)
+
+	mapper := agg.MustCompile(agg.SQLite,
+		agg.Map(&staleUpdateEntity{}, agg.WithTable("stale_update_entities")),
+	)
+	entity := &staleUpdateEntity{Name: "created"}
+	if err := mapper.Save(ctx, db, entity); err != nil {
+		t.Fatalf("Save insert: %v", err)
+	}
+
+	exec(t, db, `CREATE TRIGGER delete_before_stale_update
+		BEFORE UPDATE ON stale_update_entities
+		BEGIN
+			DELETE FROM stale_update_entities WHERE id = OLD.id;
+			SELECT RAISE(IGNORE);
+		END
+	`)
+
+	entity.Name = "updated"
+	if err := mapper.Save(ctx, db, entity); !errors.Is(err, agg.ErrStaleEntity) {
+		t.Fatalf("expected stale entity error, got %v", err)
 	}
 }
 

@@ -51,6 +51,7 @@ func (r *bufferedRows) Scan(dest ...any) error {
 	return nil
 }
 
+func (r *bufferedRows) Err() error   { return nil }
 func (r *bufferedRows) Close() error { return nil }
 
 func scanRowValues(rowSet rows, values []any, dest []any) error {
@@ -753,6 +754,12 @@ func (b *sqliteBackend) insertGeneratedRows(ctx context.Context, op insertOp) (r
 		}
 		keyed = append(keyed, keyedRow{pk: pk, values: values})
 	}
+	if err := rowSet.Err(); err != nil {
+		return nil, err
+	}
+	if len(keyed) != len(op.rows) {
+		return nil, fmt.Errorf("%w: insert expected %d returned rows, got %d", ErrConsistency, len(op.rows), len(keyed))
+	}
 	// Sort by PK (ascending = input order due to ROW_NUMBER)
 	sort.Slice(keyed, func(i, j int) bool { return keyed[i].pk < keyed[j].pk })
 
@@ -779,6 +786,7 @@ func (b *sqliteBackend) insertManualRows(ctx context.Context, op insertOp) (rows
 	returningCount := len(op.returningColumns)
 	dest := make([]any, returningCount)
 	scanned := make([][]any, len(op.rows))
+	seen := make([]bool, len(op.rows))
 	for rowSet.Next() {
 		values := make([]any, returningCount)
 		if err := scanRowValues(rowSet, values, dest); err != nil {
@@ -787,9 +795,21 @@ func (b *sqliteBackend) insertManualRows(ctx context.Context, op insertOp) (rows
 		key := op.keyFromReturning(values)
 		idx, ok := inputByKey[key]
 		if !ok {
-			return nil, fmt.Errorf("returned key %v does not match any input row", key)
+			return nil, fmt.Errorf("%w: returned key %v does not match any input row", ErrConsistency, key)
+		}
+		if seen[idx] {
+			return nil, fmt.Errorf("%w: insert returned duplicate key %v", ErrConsistency, key)
 		}
 		scanned[idx] = values
+		seen[idx] = true
+	}
+	if err := rowSet.Err(); err != nil {
+		return nil, err
+	}
+	for i, returned := range seen {
+		if !returned {
+			return nil, fmt.Errorf("%w: insert did not return row at input index %d", ErrConsistency, i)
+		}
 	}
 	return &bufferedRows{data: scanned}, nil
 }
@@ -806,13 +826,25 @@ func (b *sqliteBackend) UpdateRows(ctx context.Context, op updateOp) (rows, erro
 		}
 		values := make([]any, returningCount)
 		dest := make([]any, returningCount)
-		if rowSet.Next() {
+		returned := rowSet.Next()
+		if returned {
 			if err := scanRowValues(rowSet, values, dest); err != nil {
 				_ = rowSet.Close()
 				return nil, err
 			}
 		}
+		if rowSet.Next() {
+			_ = rowSet.Close()
+			return nil, fmt.Errorf("%w: update returned more than one row", ErrConsistency)
+		}
+		if err := rowSet.Err(); err != nil {
+			_ = rowSet.Close()
+			return nil, err
+		}
 		_ = rowSet.Close()
+		if !returned {
+			return nil, fmt.Errorf("%w: update returned no row for input index %d", ErrStaleEntity, planned.index)
+		}
 		result = append(result, values)
 	}
 

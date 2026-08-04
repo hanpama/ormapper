@@ -4,31 +4,43 @@ on:
   push:
   pull_request:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
+    name: Test (Go ${{ matrix.go-version }})
     runs-on: ubuntu-latest
-
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        go-version: ["1.24.x", "1.26.x"]
     services:
       postgres:
         image: postgres:16-alpine
         env:
-          POSTGRES_DB: ormapper
-          POSTGRES_USER: ormapper
-          POSTGRES_PASSWORD: ormapper
+          POSTGRES_DB: agg
+          POSTGRES_USER: agg
+          POSTGRES_PASSWORD: agg
         ports:
           - 17432:5432
         options: >-
-          --health-cmd "pg_isready -U ormapper -d ormapper"
+          --health-cmd "pg_isready -U agg -d agg"
           --health-interval 1s
           --health-timeout 5s
           --health-retries 30
-
+    env:
+      AGG_POSTGRES_DSN: postgres://agg:agg@localhost:17432/agg?sslmode=disable
     steps:
       - uses: actions/checkout@v6
-
       - uses: actions/setup-go@v6
         with:
-          go-version: "1.24.x"
+          go-version: ${{ matrix.go-version }}
           cache: true
           cache-dependency-path: |
             go.mod
@@ -36,35 +48,57 @@ jobs:
             tests/sqlite/go.sum
             tests/postgres/go.sum
             benchmark/go.sum
-
       - name: Test root module
         run: go test ./...
-
       - name: Test contracts module
         working-directory: tests/contracts
         run: go test ./...
-
       - name: Test SQLite module
         working-directory: tests/sqlite
         run: go test ./...
-
       - name: Test PostgreSQL module
         working-directory: tests/postgres
         run: go test ./...
-
       - name: Test benchmark module
         working-directory: benchmark
         run: go test ./...
+      - name: Race test root module
+        if: matrix.go-version == '1.26.x'
+        run: go test -race ./...
+      - name: Race test SQLite module
+        if: matrix.go-version == '1.26.x'
+        working-directory: tests/sqlite
+        run: go test -race ./...
 
-  lint:
+  vendoring:
+    name: Copy vendoring (${{ matrix.backend }})
     runs-on: ubuntu-latest
-
+    timeout-minutes: 5
+    strategy:
+      matrix:
+        backend: [postgres, sqlite]
     steps:
       - uses: actions/checkout@v6
-
       - uses: actions/setup-go@v6
         with:
-          go-version: "1.24.x"
+          go-version: "1.26.x"
+      - name: Compile isolated distribution
+        run: |
+          workdir="$(mktemp -d)"
+          cp lib.go "${{ matrix.backend }}.go" "$workdir/"
+          cd "$workdir"
+          go mod init example.com/agg-vendored
+          go test ./...
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.26.x"
           cache: true
           cache-dependency-path: |
             go.mod
@@ -72,22 +106,28 @@ jobs:
             tests/sqlite/go.sum
             tests/postgres/go.sum
             benchmark/go.sum
-
       - name: Lint root module
         run: go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.8.0 run ./...
-
       - name: Lint contracts module
         working-directory: tests/contracts
         run: go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.8.0 run ./...
-
       - name: Lint SQLite module
         working-directory: tests/sqlite
         run: go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.8.0 run ./...
-
       - name: Lint PostgreSQL module
         working-directory: tests/postgres
         run: go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.8.0 run ./...
-
       - name: Lint benchmark module
         working-directory: benchmark
         run: go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.8.0 run ./...
+
+  vulnerability-scan:
+    name: Vulnerability scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.26.x"
+      - run: go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...

@@ -14,7 +14,7 @@ import (
 )
 
 func TestPostgresContracts(t *testing.T) {
-	dsn := os.Getenv("ORMAPPER_POSTGRES_DSN")
+	dsn := os.Getenv("AGG_POSTGRES_DSN")
 	if dsn == "" {
 		dsn = "postgres://agg:agg@localhost:17432/agg?sslmode=disable"
 	}
@@ -32,6 +32,9 @@ func TestPostgresContracts(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := db.PingContext(ctx); err != nil {
+		if os.Getenv("CI") != "" {
+			t.Fatalf("postgres is required in CI: %v", err)
+		}
 		t.Skipf("postgres is not available: %v; start it with `docker compose -f ../docker-compose.yml up -d`", err)
 	}
 

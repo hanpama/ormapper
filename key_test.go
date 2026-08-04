@@ -54,6 +54,16 @@ func TestNewKeyPanicsOnTooManyValues(t *testing.T) {
 	_ = NewKey(1, 2, 3, 4, 5, 6, 7, 8, 9, 10)
 }
 
+func TestNewKeyPanicsOnNonComparableValue(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Fatal("expected NewKey with a slice value to panic")
+		}
+	}()
+
+	_ = NewKey([]byte("not-comparable"))
+}
+
 func TestKeyAtPanicsOutOfBounds(t *testing.T) {
 	defer func() {
 		if recover() == nil {

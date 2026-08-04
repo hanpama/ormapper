@@ -61,7 +61,8 @@
 //   - WithConverter registers a bidirectional type converter for a field.
 //
 // Registered *Child and []*Child fields are treated as aggregate children
-// automatically when the child type is also compiled.
+// automatically when the child type is also compiled. Aggregate relations
+// must be acyclic.
 //
 // # Save semantics
 //
@@ -69,6 +70,18 @@
 // with new manual keys, updates rows with existing keys, and deletes children
 // missing from the input value. For auto primary keys, zero means insert and
 // non-zero means update.
+//
+// # Transactions
+//
+// Aggregate operations may execute multiple statements. Pass *sql.Tx rather
+// than *sql.DB when the full operation must commit or roll back atomically. The
+// caller owns transaction isolation as well as transaction lifetime.
+//
+// # Query fragments
+//
+// Query conditions and expressions use ? parameters. Write ?? for a literal
+// question mark, such as a PostgreSQL JSON operator. SQL fragments and
+// identifiers must be developer-authored; pass untrusted values as parameters.
 //
 // # Example
 //
@@ -141,8 +154,8 @@ type DBTX interface {
 	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
 }
 
-// Dialect selects the SQL dialect used by a Mapper.
-// Use one of the built-in values such as Postgres or SQLite.
+// Dialect selects the SQL dialect used by a Mapper. It is intentionally closed;
+// module users choose Postgres or SQLite.
 type Dialect interface {
 	newBackend(db DBTX) backend
 }
@@ -290,13 +303,22 @@ type keyTail6 struct{ v1, v2, v3, v4, v5, v6 any }
 type keyTail7 struct{ v1, v2, v3, v4, v5, v6, v7 any }
 type keyTail8 struct{ v1, v2, v3, v4, v5, v6, v7, v8 any }
 
-// NewKey creates a new Key from the given values.
-// Supports up to 9 column values.
+// NewKey creates a Key from up to nine comparable column values.
+// It panics when given more values or a non-comparable value.
 func NewKey(vals ...any) Key {
 	return newKeyFromValues(vals)
 }
 
 func newKeyFromValues(vals []any) Key {
+	if len(vals) > 9 {
+		panic("agg: Key supports up to 9 column values")
+	}
+	for i, value := range vals {
+		if value != nil && !reflect.TypeOf(value).Comparable() {
+			panic(fmt.Sprintf("agg: key value at index %d has non-comparable type %T", i, value))
+		}
+	}
+
 	switch len(vals) {
 	case 0:
 		return new0()
@@ -408,15 +430,16 @@ func Map(entityPtr any, opts ...MapOption) Mapping {
 // MapOption customizes how an entity maps to a table.
 // Build options with WithTable, WithSchema, and WithConverter.
 type MapOption struct {
-	apply func(*entityMetadata)
+	apply func(*entityMetadata) error
 }
 
 // WithSchema overrides the default schema for an entity.
 // Pass it only to Map.
 func WithSchema(schema string) MapOption {
 	return MapOption{
-		apply: func(meta *entityMetadata) {
+		apply: func(meta *entityMetadata) error {
 			meta.Schema = schema
+			return nil
 		},
 	}
 }
@@ -425,8 +448,9 @@ func WithSchema(schema string) MapOption {
 // Pass it only to Map.
 func WithTable(table string) MapOption {
 	return MapOption{
-		apply: func(meta *entityMetadata) {
+		apply: func(meta *entityMetadata) error {
 			meta.Table = table
+			return nil
 		},
 	}
 }
@@ -462,16 +486,29 @@ func Compile(dialect Dialect, mappings ...Mapping) (*Mapper, error) {
 		if registered[entityType] {
 			return nil, fmt.Errorf("Compile: duplicate mapping for %s", entityType)
 		}
+		fields, err := analyzeStruct(entityType)
+		if err != nil {
+			return nil, fmt.Errorf("Compile: entity %s: %w", entityType, err)
+		}
 		entityMeta := entityMetadata{
 			Table:  toSnakeCase(entityType.Name()),
-			Fields: analyzeStruct(entityType),
+			Fields: fields,
 		}
-		for _, opt := range mapping.options {
-			opt.apply(&entityMeta)
+		for optionIndex, opt := range mapping.options {
+			if opt.apply == nil {
+				return nil, fmt.Errorf("Compile: entity %s: invalid map option at index %d", entityType, optionIndex)
+			}
+			if err := opt.apply(&entityMeta); err != nil {
+				return nil, fmt.Errorf("Compile: entity %s: %w", entityType, err)
+			}
 		}
 
 		registered[entityType] = true
 		meta[entityType] = entityMeta
+	}
+
+	if err := validateConverterOptions(meta, registered); err != nil {
+		return nil, err
 	}
 
 	registry := buildEntityMappings(meta, registered)
@@ -497,7 +534,8 @@ func MustCompile(dialect Dialect, mappings ...Mapping) *Mapper {
 
 // WithConverter registers a bidirectional type converter for a field.
 // F is the Go field type, C is the DB column type. toDB converts on save,
-// fromDB converts on load. Pass it only to Map.
+// fromDB converts on load. Key and child fields cannot use converters. Pass it
+// only to Map.
 //
 // Example — storing an enum as text:
 //
@@ -512,16 +550,60 @@ func MustCompile(dialect Dialect, mappings ...Mapping) *Mapper {
 //	)
 func WithConverter[F, C any](fieldName string, toDB func(F) (C, error), fromDB func(C) (F, error)) MapOption {
 	return MapOption{
-		apply: func(meta *entityMetadata) {
+		apply: func(meta *entityMetadata) error {
+			if fieldName == "" {
+				return fmt.Errorf("converter field name is required")
+			}
+			if toDB == nil || fromDB == nil {
+				return fmt.Errorf("converter for field %s requires both functions", fieldName)
+			}
 			if meta.Converters == nil {
 				meta.Converters = make(map[string]*fieldConverter)
 			}
-			meta.Converters[fieldName] = &fieldConverter{
-				toDB:   func(v any) (any, error) { return toDB(v.(F)) },
-				fromDB: func(v any) (any, error) { return fromDB(v.(C)) },
+			if _, exists := meta.Converters[fieldName]; exists {
+				return fmt.Errorf("converter for field %s is registered more than once", fieldName)
 			}
+			meta.Converters[fieldName] = &fieldConverter{
+				fieldType: reflect.TypeFor[F](),
+				toDB: func(v any) (any, error) {
+					value, err := converterValue[F](v)
+					if err != nil {
+						return nil, fmt.Errorf("convert field %s to database: %w", fieldName, err)
+					}
+					return toDB(value)
+				},
+				fromDB: func(v any) (any, error) {
+					value, err := converterValue[C](v)
+					if err != nil {
+						return nil, fmt.Errorf("convert database value for field %s: %w", fieldName, err)
+					}
+					return fromDB(value)
+				},
+			}
+			return nil
 		},
 	}
+}
+
+func converterValue[T any](value any) (T, error) {
+	var zero T
+	target := reflect.TypeFor[T]()
+	if value == nil {
+		switch target.Kind() {
+		case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+			return zero, nil
+		default:
+			return zero, fmt.Errorf("NULL is not assignable to %s", target)
+		}
+	}
+	if typed, ok := value.(T); ok {
+		return typed, nil
+	}
+	source := reflect.ValueOf(value)
+	if source.Type().ConvertibleTo(target) {
+		return source.Convert(target).Interface().(T), nil
+	}
+	return zero, fmt.Errorf("%T is not assignable or convertible to %s", value, target)
 }
 
 type entityMetadata struct {
@@ -550,9 +632,9 @@ type fieldMetadata struct {
 	defaultColumn string // snake_case version of name
 }
 
-func analyzeStruct(structType reflect.Type) []fieldMetadata {
+func analyzeStruct(structType reflect.Type) ([]fieldMetadata, error) {
 	if structType.Kind() != reflect.Struct {
-		return nil
+		return nil, nil
 	}
 
 	var fields []fieldMetadata
@@ -576,9 +658,17 @@ func analyzeStruct(structType reflect.Type) []fieldMetadata {
 			if tagValue == "-" {
 				metadata.ignoreTag = true
 			} else {
+				seen := make(map[string]bool)
 				parts := strings.Split(tagValue, ",")
 				for _, part := range parts {
 					part = strings.TrimSpace(part)
+					if part == "" {
+						return nil, fmt.Errorf("field %s has an empty agg tag option", structField.Name)
+					}
+					if seen[part] {
+						return nil, fmt.Errorf("field %s repeats agg tag option %q", structField.Name, part)
+					}
+					seen[part] = true
 
 					switch {
 					case part == "primary":
@@ -597,6 +687,11 @@ func analyzeStruct(structType reflect.Type) []fieldMetadata {
 						metadata.skipUpdateTag = true
 					case strings.HasPrefix(part, "column:"):
 						metadata.columnTag = strings.TrimPrefix(part, "column:")
+						if metadata.columnTag == "" {
+							return nil, fmt.Errorf("field %s has an empty column name", structField.Name)
+						}
+					default:
+						return nil, fmt.Errorf("field %s has unknown agg tag option %q", structField.Name, part)
 					}
 				}
 			}
@@ -605,7 +700,30 @@ func analyzeStruct(structType reflect.Type) []fieldMetadata {
 		fields = append(fields, metadata)
 	}
 
-	return fields
+	return fields, nil
+}
+
+func validateConverterOptions(meta map[reflect.Type]entityMetadata, registered map[reflect.Type]bool) error {
+	for entityType, entityMeta := range meta {
+		fields := make(map[string]fieldMetadata, len(entityMeta.Fields))
+		for _, field := range entityMeta.Fields {
+			fields[field.name] = field
+		}
+		for fieldName, converter := range entityMeta.Converters {
+			field, ok := fields[fieldName]
+			if !ok || field.ignoreTag {
+				return fmt.Errorf("Compile: converter field %s.%s is not mapped", entityType, fieldName)
+			}
+			_, _, isChild := childMappingTarget(field.typ, field.childTag, registered)
+			if isChild {
+				return fmt.Errorf("Compile: converter field %s.%s is an aggregate child", entityType, fieldName)
+			}
+			if field.typ != converter.fieldType {
+				return fmt.Errorf("Compile: converter field %s.%s has type %s, not %s", entityType, fieldName, field.typ, converter.fieldType)
+			}
+		}
+	}
+	return nil
 }
 
 func buildEntityMappings(
@@ -624,11 +742,29 @@ func buildEntityMappings(
 
 func validateMappings(registry mappingRegistry) error {
 	for _, em := range registry {
+		if em.table == "" {
+			return fmt.Errorf("Compile: entity %s has an empty table name", em.entityType)
+		}
 		if len(em.primaryKey) == 0 {
 			return fmt.Errorf("Compile: entity %s has no primary key", em.entityType)
 		}
+		if err := validateKeyFields(em, "primary", em.primaryKey); err != nil {
+			return err
+		}
+		if err := validateKeyFields(em, "parental", em.parentalKey); err != nil {
+			return err
+		}
 		if len(em.saveLayout.generatedPrimaryIndexes) > 0 && len(em.primaryKey) != 1 {
 			return fmt.Errorf("%w: entity %s has generated composite primary key", ErrUnsupportedSemantic, em.entityType)
+		}
+
+		columns := make(map[string]string, len(em.allFields))
+		for _, fieldName := range em.allFields {
+			field := em.fieldMap[fieldName]
+			if previous, ok := columns[field.column]; ok {
+				return fmt.Errorf("Compile: entity %s fields %s and %s map to duplicate column %q", em.entityType, previous, fieldName, field.column)
+			}
+			columns[field.column] = fieldName
 		}
 
 		for _, childField := range em.childFields {
@@ -656,7 +792,67 @@ func validateMappings(registry mappingRegistry) error {
 			}
 		}
 	}
+	return validateRelationCycles(registry)
+}
+
+func validateKeyFields(em *entityMapping, kind string, names []string) error {
+	if len(names) > 9 {
+		return fmt.Errorf("%w: entity %s %s key has %d fields; maximum is 9", ErrUnsupportedSemantic, em.entityType, kind, len(names))
+	}
+	for _, name := range names {
+		field := em.fieldMap[name]
+		if !field.typ.Comparable() {
+			return fmt.Errorf("Compile: entity %s %s key field %s has non-comparable type %s", em.entityType, kind, name, field.typ)
+		}
+		if field.converter != nil {
+			return fmt.Errorf("%w: entity %s %s key field %s cannot use a converter", ErrUnsupportedSemantic, em.entityType, kind, name)
+		}
+	}
 	return nil
+}
+
+func validateRelationCycles(registry mappingRegistry) error {
+	const (
+		visiting = 1
+		visited  = 2
+	)
+	state := make(map[reflect.Type]int, len(registry))
+	var visit func(reflect.Type) error
+	visit = func(entityType reflect.Type) error {
+		switch state[entityType] {
+		case visiting:
+			return fmt.Errorf("Compile: aggregate relation cycle reaches %s", entityType)
+		case visited:
+			return nil
+		}
+		state[entityType] = visiting
+		em := registry[entityType]
+		for _, childField := range em.childFields {
+			if err := visit(em.childMap[childField].target); err != nil {
+				return err
+			}
+		}
+		state[entityType] = visited
+		return nil
+	}
+	for entityType := range registry {
+		if err := visit(entityType); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func childMappingTarget(fieldType reflect.Type, explicit bool, registered map[reflect.Type]bool) (reflect.Type, bool, bool) {
+	if fieldType.Kind() == reflect.Slice && fieldType.Elem().Kind() == reflect.Ptr {
+		target := fieldType.Elem().Elem()
+		return target, false, explicit || registered[target]
+	}
+	if fieldType.Kind() == reflect.Ptr {
+		target := fieldType.Elem()
+		return target, true, explicit || registered[target]
+	}
+	return nil, false, explicit
 }
 
 func buildSingleMapping(
@@ -681,46 +877,14 @@ func buildSingleMapping(
 			continue
 		}
 
-		isChild := metadata.childTag
-		var childTarget reflect.Type
-		var childSingular bool
-
-		if !isChild {
-			if fieldType.Kind() == reflect.Slice {
-				elemType := fieldType.Elem()
-				if elemType.Kind() == reflect.Ptr {
-					targetType := elemType.Elem()
-					if registered[targetType] {
-						isChild = true
-						childTarget = targetType
-						childSingular = false
-					}
-				}
-			}
-
-			if !isChild && fieldType.Kind() == reflect.Ptr {
-				targetType := fieldType.Elem()
-				if registered[targetType] {
-					isChild = true
-					childTarget = targetType
-					childSingular = true
-				}
-			}
-		} else {
-			if fieldType.Kind() == reflect.Slice {
-				elemType := fieldType.Elem()
-				if elemType.Kind() == reflect.Ptr {
-					childTarget = elemType.Elem()
-					childSingular = false
-				}
-			} else if fieldType.Kind() == reflect.Ptr {
-				childTarget = fieldType.Elem()
-				childSingular = true
-			}
-		}
+		childTarget, childSingular, isChild := childMappingTarget(fieldType, metadata.childTag, registered)
 
 		if isChild {
+			if metadata.primaryTag || metadata.parentalTag || metadata.skipInsertTag || metadata.skipUpdateTag || metadata.columnTag != "" {
+				childTarget = nil
+			}
 			child := child{
+				name:       fieldName,
 				target:     childTarget,
 				singular:   childSingular,
 				typ:        fieldType,
@@ -994,6 +1158,9 @@ func unwrapDestEntityType(dest any, op string) (reflect.Type, error) {
 	if destType.Kind() != reflect.Ptr {
 		return nil, fmt.Errorf("%s: dest must be a pointer to entity pointer, got %s", op, destType)
 	}
+	if reflect.ValueOf(dest).IsNil() {
+		return nil, fmt.Errorf("%s: dest must be a non-nil pointer to entity pointer, got %s", op, destType)
+	}
 	if destType.Elem().Kind() != reflect.Ptr {
 		return nil, fmt.Errorf("%s: dest must be a pointer to entity pointer, got %s", op, destType)
 	}
@@ -1011,6 +1178,9 @@ func unwrapDestSliceEntityType(dest any, op string) (reflect.Type, error) {
 	}
 	if destType.Kind() != reflect.Ptr {
 		return nil, fmt.Errorf("%s: dest must be a pointer to a slice of entity pointers, got %s", op, destType)
+	}
+	if reflect.ValueOf(dest).IsNil() {
+		return nil, fmt.Errorf("%s: dest must be a non-nil pointer to a slice of entity pointers, got %s", op, destType)
 	}
 	sliceType := destType.Elem()
 	if sliceType.Kind() != reflect.Slice {
@@ -1034,6 +1204,9 @@ func unwrapEntityType(entity any, op string) (reflect.Type, error) {
 	}
 	if entityType.Kind() != reflect.Ptr {
 		return nil, fmt.Errorf("%s: entity must be a pointer to struct, got %s", op, entityType)
+	}
+	if reflect.ValueOf(entity).IsNil() {
+		return nil, fmt.Errorf("%s: entity must be a non-nil pointer to struct, got %s", op, entityType)
 	}
 	entityType = entityType.Elem()
 	if entityType.Kind() != reflect.Struct {
@@ -1103,13 +1276,16 @@ type Query[T any] struct {
 //
 // alias is the SQL alias used in Where, Join, OrderBy, and related clauses.
 func NewQuery[T any](mapper *Mapper, db DBTX, alias string) *Query[T] {
+	if mapper == nil {
+		panic("NewQuery: mapper is required")
+	}
 	var zero T
 	entityType := reflect.TypeOf(zero)
 	if entityType == nil {
 		panic("Query[T]: T must be a struct type")
 	}
-	if entityType.Kind() == reflect.Ptr {
-		panic("Query[T]: T must be a struct type, not *Struct")
+	if entityType.Kind() != reflect.Struct {
+		panic("Query[T]: T must be a struct type")
 	}
 
 	mapping, err := mapper.getMapping(entityType)
@@ -1266,6 +1442,12 @@ func (q *Query[T]) buildGroupBy() []sqlNode {
 }
 
 func (q *Query[T]) fetch(ctx context.Context, limit *int) ([]*T, error) {
+	if limit != nil && *limit < 0 {
+		return nil, fmt.Errorf("FetchMany: limit must be non-negative, got %d", *limit)
+	}
+	if q.offset != nil && *q.offset < 0 {
+		return nil, fmt.Errorf("Query: offset must be non-negative, got %d", *q.offset)
+	}
 	var limitSQL, offsetSQL *sqlNode
 	if limit != nil {
 		var l sqlNode = sqlParam{value: *limit}
@@ -1371,8 +1553,9 @@ func (r mappingRegistry) get(entityType reflect.Type) (*entityMapping, error) {
 }
 
 type fieldConverter struct {
-	toDB   func(any) (any, error)
-	fromDB func(any) (any, error)
+	fieldType reflect.Type
+	toDB      func(any) (any, error)
+	fromDB    func(any) (any, error)
 }
 
 type convertingScanner struct {
@@ -1385,8 +1568,20 @@ func (c *convertingScanner) Scan(src any) error {
 	if err != nil {
 		return err
 	}
-	c.target.Set(reflect.ValueOf(converted))
-	return nil
+	if converted == nil {
+		c.target.SetZero()
+		return nil
+	}
+	value := reflect.ValueOf(converted)
+	if value.Type().AssignableTo(c.target.Type()) {
+		c.target.Set(value)
+		return nil
+	}
+	if value.Type().ConvertibleTo(c.target.Type()) {
+		c.target.Set(value.Convert(c.target.Type()))
+		return nil
+	}
+	return fmt.Errorf("converted value type %s is not assignable to field type %s", value.Type(), c.target.Type())
 }
 
 type field struct {
@@ -1451,6 +1646,7 @@ func newFieldPlan(fieldMap map[string]*field, fieldNames []string) fieldPlan {
 }
 
 type child struct {
+	name       string
 	target     reflect.Type
 	singular   bool
 	typ        reflect.Type
@@ -1469,24 +1665,33 @@ func (c *child) count(entityPtr any) int {
 	return fieldPtr.Len()
 }
 
-func (c *child) appendTo(entityPtr any, dst []any) []any {
+func (c *child) appendTo(entityPtr any, dst []any) ([]any, error) {
 	sv := reflect.ValueOf(entityPtr).Elem()
 	fieldPtr := sv.Field(c.fieldIndex)
 	if c.singular {
 		if fieldPtr.IsNil() {
-			return dst
+			return dst, nil
 		}
-		return append(dst, fieldPtr.Interface())
+		return append(dst, fieldPtr.Interface()), nil
 	}
 
 	for j := 0; j < fieldPtr.Len(); j++ {
-		dst = append(dst, fieldPtr.Index(j).Interface())
+		value := fieldPtr.Index(j)
+		if value.IsNil() {
+			return nil, fmt.Errorf("aggregate child field %s contains nil at index %d", c.name, j)
+		}
+		dst = append(dst, value.Interface())
 	}
-	return dst
+	return dst, nil
 }
 
-func (c *child) setByParentIndexes(parents []any, children []any, parentIndexes []int, counts []int) {
+func (c *child) setByParentIndexes(parents []any, children []any, parentIndexes []int, counts []int) error {
 	if c.singular {
+		for parentIndex, count := range counts {
+			if count > 1 {
+				return fmt.Errorf("%w: singular child field %s has %d rows for parent index %d", ErrConsistency, c.name, count, parentIndex)
+			}
+		}
 		for _, parent := range parents {
 			entity := reflect.ValueOf(parent).Elem()
 			entity.Field(c.fieldIndex).Set(reflect.Zero(c.typ))
@@ -1502,7 +1707,7 @@ func (c *child) setByParentIndexes(parents []any, children []any, parentIndexes 
 			entity.Field(c.fieldIndex).Set(reflect.ValueOf(childEntity))
 			counts[parentIndex] = 1
 		}
-		return
+		return nil
 	}
 
 	parentSlices := make([]reflect.Value, len(parents))
@@ -1523,6 +1728,7 @@ func (c *child) setByParentIndexes(parents []any, children []any, parentIndexes 
 		parentSlices[parentIndex].Index(index).Set(reflect.ValueOf(childEntity))
 		counts[parentIndex]++
 	}
+	return nil
 }
 
 type saveLayout struct {
@@ -1930,6 +2136,9 @@ func (u *persistence) scanEntities(em *entityMapping, rowSet rows, expectedCapac
 		}
 		entities = append(entities, entityPtr)
 	}
+	if err := rowSet.Err(); err != nil {
+		return nil, err
+	}
 	return entities, nil
 }
 
@@ -1964,7 +2173,9 @@ func (u *persistence) loadChildren(ctx context.Context, em *entityMapping, paren
 			}
 		}
 
-		child.setByParentIndexes(parents, childEntities, parentIndexes, counts)
+		if err := child.setByParentIndexes(parents, childEntities, parentIndexes, counts); err != nil {
+			return err
+		}
 	}
 
 	return nil
@@ -2048,7 +2259,11 @@ func (u *persistence) saveChildRelation(ctx context.Context, parentMapping, chil
 		}
 
 		start := len(submitted)
-		submitted = child.appendTo(entity, submitted)
+		var err error
+		submitted, err = child.appendTo(entity, submitted)
+		if err != nil {
+			return err
+		}
 		for _, childEntity := range submitted[start:] {
 			childMapping.injectParentalKey(childEntity, parentKey)
 
@@ -2203,6 +2418,9 @@ func (u *persistence) scanReturning(em *entityMapping, entities []any, planned [
 		}
 		count++
 	}
+	if err := rowSet.Err(); err != nil {
+		return 0, err
+	}
 	return count, nil
 }
 
@@ -2294,6 +2512,9 @@ func (u *persistence) scanTypedKeys(rowSet rows, keyTypes []reflect.Type) ([]Key
 		}
 		keys = append(keys, NewKey(values...))
 	}
+	if err := rowSet.Err(); err != nil {
+		return nil, err
+	}
 	return keys, nil
 }
 
@@ -2317,6 +2538,9 @@ func (u *persistence) scanKeyPairs(rowSet rows, leftTypes, rightTypes []reflect.
 		}
 		leftKeys = append(leftKeys, NewKey(values[:leftLen]...))
 		rightKeys = append(rightKeys, NewKey(values[leftLen:]...))
+	}
+	if err := rowSet.Err(); err != nil {
+		return nil, nil, err
 	}
 	return leftKeys, rightKeys, nil
 }
@@ -2343,6 +2567,7 @@ func coerceScanned(value any, target reflect.Type) any {
 type rows interface {
 	Next() bool
 	Scan(dest ...any) error
+	Err() error
 	Close() error
 }
 
@@ -2482,6 +2707,11 @@ func parseSQL(sql string, params ...any) sqlNode {
 			inDoubleQuote = !inDoubleQuote
 			textBuilder.WriteByte(ch)
 		} else if ch == '?' && !inSingleQuote && !inDoubleQuote {
+			if i+1 < len(sql) && sql[i+1] == '?' {
+				textBuilder.WriteByte('?')
+				i++
+				continue
+			}
 			// Only treat ? as parameter placeholder if not inside quotes
 			if textBuilder.Len() > 0 {
 				tokens = append(tokens, sqlText{text: textBuilder.String()})

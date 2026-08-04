@@ -8,7 +8,7 @@ import (
 	"github.com/hanpama/agg/benchmark/shared"
 )
 
-func BenchmarkOrmapper_Postgres_Simple_Insert(b *testing.B) {
+func BenchmarkAgg_Postgres_Simple_Insert(b *testing.B) {
 	db, cleanup := setupPostgresDB(b)
 	defer cleanup()
 	mapper := agg.MustCompile(agg.Postgres, agg.Map(&shared.User{}, agg.WithTable("users")))
@@ -24,7 +24,7 @@ func BenchmarkOrmapper_Postgres_Simple_Insert(b *testing.B) {
 	}
 }
 
-func BenchmarkOrmapper_Postgres_Simple_Select(b *testing.B) {
+func BenchmarkAgg_Postgres_Simple_Select(b *testing.B) {
 	db, cleanup := setupPostgresDB(b)
 	defer cleanup()
 	mapper := agg.MustCompile(agg.Postgres, agg.Map(&shared.User{}, agg.WithTable("users")))
@@ -42,7 +42,7 @@ func BenchmarkOrmapper_Postgres_Simple_Select(b *testing.B) {
 	}
 }
 
-func BenchmarkOrmapper_Postgres_Simple_Update(b *testing.B) {
+func BenchmarkAgg_Postgres_Simple_Update(b *testing.B) {
 	db, cleanup := setupPostgresDB(b)
 	defer cleanup()
 	mapper := agg.MustCompile(agg.Postgres, agg.Map(&shared.User{}, agg.WithTable("users")))
@@ -64,7 +64,7 @@ func BenchmarkOrmapper_Postgres_Simple_Update(b *testing.B) {
 	}
 }
 
-func BenchmarkOrmapper_Postgres_Simple_ReadSlice(b *testing.B) {
+func BenchmarkAgg_Postgres_Simple_ReadSlice(b *testing.B) {
 	db, cleanup := setupPostgresDB(b)
 	defer cleanup()
 	mapper := agg.MustCompile(agg.Postgres, agg.Map(&shared.User{}, agg.WithTable("users")))
@@ -87,7 +87,7 @@ func BenchmarkOrmapper_Postgres_Simple_ReadSlice(b *testing.B) {
 	}
 }
 
-func BenchmarkOrmapper_Postgres_Simple_Delete(b *testing.B) {
+func BenchmarkAgg_Postgres_Simple_Delete(b *testing.B) {
 	db, cleanup := setupPostgresDB(b)
 	defer cleanup()
 	mapper := agg.MustCompile(agg.Postgres, agg.Map(&shared.User{}, agg.WithTable("users")))
@@ -110,7 +110,7 @@ func BenchmarkOrmapper_Postgres_Simple_Delete(b *testing.B) {
 	}
 }
 
-func BenchmarkOrmapper_Postgres_Aggregate_Insert(b *testing.B) {
+func BenchmarkAgg_Postgres_Aggregate_Insert(b *testing.B) {
 	db, cleanup := setupPostgresDB(b)
 	defer cleanup()
 	mapper := aggregateMapper()
@@ -134,7 +134,7 @@ func BenchmarkOrmapper_Postgres_Aggregate_Insert(b *testing.B) {
 	}
 }
 
-func BenchmarkOrmapper_Postgres_Aggregate_Select(b *testing.B) {
+func BenchmarkAgg_Postgres_Aggregate_Select(b *testing.B) {
 	db, cleanup := setupPostgresDB(b)
 	defer cleanup()
 	mapper := aggregateMapper()
@@ -152,7 +152,7 @@ func BenchmarkOrmapper_Postgres_Aggregate_Select(b *testing.B) {
 	}
 }
 
-func BenchmarkOrmapper_Postgres_Aggregate_Update(b *testing.B) {
+func BenchmarkAgg_Postgres_Aggregate_Update(b *testing.B) {
 	db, cleanup := setupPostgresDB(b)
 	defer cleanup()
 	mapper := aggregateMapper()
@@ -183,7 +183,7 @@ func BenchmarkOrmapper_Postgres_Aggregate_Update(b *testing.B) {
 	}
 }
 
-func BenchmarkOrmapper_Postgres_Aggregate_ReadSlice(b *testing.B) {
+func BenchmarkAgg_Postgres_Aggregate_ReadSlice(b *testing.B) {
 	db, cleanup := setupPostgresDB(b)
 	defer cleanup()
 	mapper := aggregateMapper()
@@ -206,7 +206,7 @@ func BenchmarkOrmapper_Postgres_Aggregate_ReadSlice(b *testing.B) {
 	}
 }
 
-func BenchmarkOrmapper_Postgres_Aggregate_Delete(b *testing.B) {
+func BenchmarkAgg_Postgres_Aggregate_Delete(b *testing.B) {
 	db, cleanup := setupPostgresDB(b)
 	defer cleanup()
 	mapper := aggregateMapper()

@@ -17,16 +17,16 @@ go test -run '^$' -bench . -benchmem ./tests
 Run a focused group:
 
 ```sh
-go test -run '^$' -bench 'BenchmarkOrmapper_Postgres_Aggregate' -benchmem ./tests
+go test -run '^$' -bench 'BenchmarkAgg_Postgres_Aggregate' -benchmem ./tests
 ```
 
 The default DSN is:
 
 ```text
-postgres://ormapper:ormapper@localhost:17432/ormapper?sslmode=disable
+postgres://agg:agg@localhost:17432/agg?sslmode=disable
 ```
 
-Override it with `ORMAPPER_BENCH_POSTGRES_DSN`.
+Override it with `AGG_BENCH_POSTGRES_DSN`.
 
 ## Structure
 
